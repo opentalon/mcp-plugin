@@ -1,0 +1,207 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/opentalon/mcp-plugin/config"
+)
+
+// fakeMCPServer is a minimal HTTP server implementing the MCP SSE protocol.
+// GET /sse sends the endpoint event then streams JSON-RPC responses.
+// POST /message receives JSON-RPC requests and responds via SSE.
+type fakeMCPServer struct {
+	srv      *httptest.Server
+	eventsCh chan string // formatted SSE events ready to write
+}
+
+func newFakeMCPServer(t *testing.T) *fakeMCPServer {
+	t.Helper()
+	fs := &fakeMCPServer{
+		eventsCh: make(chan string, 32),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sse", fs.sseHandler)
+	mux.HandleFunc("/message", fs.messageHandler(t))
+	fs.srv = httptest.NewServer(mux)
+	t.Cleanup(fs.srv.Close)
+	return fs
+}
+
+func (fs *fakeMCPServer) cfg() config.ServerConfig {
+	return config.ServerConfig{Server: "test", URL: fs.srv.URL + "/sse"}
+}
+
+func (fs *fakeMCPServer) sseHandler(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: /message\n\n")
+	fl.Flush()
+	for {
+		select {
+		case ev := <-fs.eventsCh:
+			_, _ = fmt.Fprint(w, ev)
+			fl.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func (fs *fakeMCPServer) messageHandler(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		if req.ID == nil {
+			return // notification — no response needed
+		}
+		go fs.respond(t, req)
+	}
+}
+
+func (fs *fakeMCPServer) respond(t *testing.T, req rpcRequest) {
+	t.Helper()
+	var result json.RawMessage
+	switch req.Method {
+	case "initialize":
+		result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+	case "tools/list":
+		result = json.RawMessage(`{"tools":[
+			{"name":"echo","description":"Echo input","inputSchema":{
+				"type":"object",
+				"properties":{"text":{"type":"string","description":"Text to echo"}},
+				"required":["text"]
+			}}
+		]}`)
+	case "tools/call":
+		b, _ := json.Marshal(req.Params)
+		var p struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		_ = json.Unmarshal(b, &p)
+		if p.Name == "echo" {
+			text, _ := p.Arguments["text"].(string)
+			r, _ := json.Marshal(toolsCallResult{
+				Content: []Content{{Type: "text", Text: text}},
+			})
+			result = r
+		} else {
+			r, _ := json.Marshal(toolsCallResult{
+				IsError: true,
+				Content: []Content{{Type: "text", Text: "unknown tool: " + p.Name}},
+			})
+			result = r
+		}
+	default:
+		result = json.RawMessage(`{}`)
+	}
+	resp := rpcResponse{JSONRPC: "2.0", ID: float64(*req.ID), Result: result}
+	data, _ := json.Marshal(resp)
+	fs.eventsCh <- "data: " + string(data) + "\n\n"
+}
+
+// Tests
+
+func TestResolveEndpoint(t *testing.T) {
+	cases := []struct {
+		sseURL, endpoint, want string
+	}{
+		{"http://host/sse", "/msg?id=1", "http://host/msg?id=1"},
+		{"http://host/sse", "http://other/msg", "http://other/msg"},
+		{"http://host:8080/sse", "/msg", "http://host:8080/msg"},
+		{"http://host/sse", "/msg", "http://host/msg"},
+	}
+	for _, c := range cases {
+		got := resolveEndpoint(c.sseURL, c.endpoint)
+		if got != c.want {
+			t.Errorf("resolveEndpoint(%q, %q) = %q, want %q", c.sseURL, c.endpoint, got, c.want)
+		}
+	}
+}
+
+// testCtx returns a context that is cancelled during t.Cleanup, before the
+// fake server closes. This ensures the SSE connection is torn down cleanly.
+// Cleanup order is LIFO: cancel (registered here) runs before srv.Close
+// (registered in newFakeMCPServer), so the server can shut down without hanging.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func TestClient_Connect(t *testing.T) {
+	srv := newFakeMCPServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+}
+
+func TestClient_ListTools(t *testing.T) {
+	srv := newFakeMCPServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	tools, err := c.ListTools()
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(tools))
+	}
+	if tools[0].Name != "echo" {
+		t.Errorf("tool name = %q, want echo", tools[0].Name)
+	}
+	if tools[0].InputSchema.Properties["text"].Type != "string" {
+		t.Errorf("text param type = %q, want string", tools[0].InputSchema.Properties["text"].Type)
+	}
+}
+
+func TestClient_CallTool_success(t *testing.T) {
+	srv := newFakeMCPServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	got, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got != "hello world" {
+		t.Errorf("content = %q, want %q", got, "hello world")
+	}
+}
+
+func TestClient_CallTool_toolError(t *testing.T) {
+	srv := newFakeMCPServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	_, err := c.CallTool("unknown-tool", map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for unknown tool")
+	}
+}
+
+func TestClient_ServerName(t *testing.T) {
+	c := NewClient(config.ServerConfig{Server: "myserver", URL: "http://x/sse"})
+	if got := c.ServerName(); got != "myserver" {
+		t.Errorf("ServerName = %q, want myserver", got)
+	}
+}
