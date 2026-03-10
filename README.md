@@ -1,12 +1,12 @@
 # opentalon-mcp
 
-[![CI](https://github.com/opentalon/opentalon-mcp/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/opentalon/opentalon-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/opentalon/mcp-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/opentalon/mcp-plugin/actions/workflows/ci.yml)
 
 An [OpenTalon](https://github.com/opentalon/opentalon) plugin that bridges MCP (Model Context Protocol) servers, exposing their tools to the OpenTalon AI assistant.
 
 ## Overview
 
-`opentalon-mcp` connects to one or more MCP servers over HTTP+SSE and registers their tools dynamically with OpenTalon. It runs as a plugin subprocess, communicating with the host via Unix socket or TCP gRPC.
+`mcp-plugin` connects to one or more MCP servers over HTTP+SSE and registers their tools dynamically with OpenTalon. It runs as a plugin subprocess, communicating with the host via Unix socket or TCP gRPC.
 
 Tools from each server are namespaced as `<server>__<tool>` (e.g. `filesystem__read_file`).
 
