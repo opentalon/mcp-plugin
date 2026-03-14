@@ -38,6 +38,12 @@ func Load() ([]ServerConfig, error) {
 	return cfgs, nil
 }
 
+// CacheDir returns the directory for caching MCP tool specs, from OPENTALON_MCP_CACHE_DIR.
+// Returns "" if not set.
+func CacheDir() string {
+	return os.Getenv("OPENTALON_MCP_CACHE_DIR")
+}
+
 func expandEnv(s string) string {
 	return envRe.ReplaceAllStringFunc(s, func(match string) string {
 		name := envRe.FindStringSubmatch(match)[1]
