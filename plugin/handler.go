@@ -35,6 +35,13 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		}
 	}
 
+	if e.client == nil {
+		return pluginpkg.Response{
+			CallID: req.ID,
+			Error:  fmt.Sprintf("MCP server for action %q is currently offline (loaded from cache)", req.Action),
+		}
+	}
+
 	// Convert flat string args to typed interface{} map using the schema.
 	args := convertArgs(req.Args, e.schema)
 

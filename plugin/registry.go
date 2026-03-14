@@ -3,8 +3,11 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/opentalon/mcp-plugin/config"
@@ -13,6 +16,7 @@ import (
 )
 
 // entry maps one namespaced action name back to the client and original MCP tool name.
+// client is nil when the entry was loaded from cache (server offline).
 type entry struct {
 	client      *mcp.Client
 	mcpToolName string
@@ -25,9 +29,19 @@ type Registry struct {
 	caps    pluginpkg.CapabilitiesMsg
 }
 
+// cachedServer is the on-disk format for one server's tool list.
+type cachedServer struct {
+	Server string     `json:"server"`
+	Tools  []mcp.Tool `json:"tools"`
+}
+
 // Build connects to all configured MCP servers, lists their tools, and
 // builds the tool registry and capabilities message.
+// If a server is unreachable and a cache exists, the cached spec is used
+// so the LLM still knows what tools are available.
 func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
+	cacheDir := config.CacheDir()
+
 	r := &Registry{
 		actions: make(map[string]entry),
 		caps: pluginpkg.CapabilitiesMsg{
@@ -37,17 +51,26 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 	}
 
 	for _, cfg := range cfgs {
-		client := mcp.NewClient(cfg)
-		if err := client.Connect(ctx); err != nil {
-			return nil, fmt.Errorf("connect to MCP server %s: %w", cfg.Server, err)
-		}
-
-		tools, err := client.ListTools()
+		tools, client, err := fetchTools(ctx, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("list tools from %s: %w", cfg.Server, err)
+			log.Printf("mcp-plugin: server %s: %v", cfg.Server, err)
+			if cacheDir != "" {
+				tools = loadCache(cacheDir, cfg.Server)
+			}
+			if len(tools) == 0 {
+				log.Printf("mcp-plugin: server %s: no cache available, skipping", cfg.Server)
+				continue
+			}
+			log.Printf("mcp-plugin: server %s: using cached spec (%d tools)", cfg.Server, len(tools))
+			client = nil // mark as offline
+		} else {
+			log.Printf("mcp-plugin: server %s: %d tools", cfg.Server, len(tools))
+			if cacheDir != "" {
+				if saveErr := saveCache(cacheDir, cfg.Server, tools); saveErr != nil {
+					log.Printf("mcp-plugin: server %s: save cache: %v", cfg.Server, saveErr)
+				}
+			}
 		}
-
-		log.Printf("mcp-plugin: server %s: %d tools", cfg.Server, len(tools))
 
 		for _, tool := range tools {
 			actionName := cfg.Server + "__" + tool.Name
@@ -57,16 +80,65 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				schema:      tool.InputSchema,
 			}
 
+			desc := tool.Description
+			if client == nil {
+				desc = "[offline] " + desc
+			}
 			params := schemaToParams(tool.InputSchema)
 			r.caps.Actions = append(r.caps.Actions, pluginpkg.ActionMsg{
 				Name:        actionName,
-				Description: tool.Description,
+				Description: desc,
 				Parameters:  params,
 			})
 		}
 	}
 
 	return r, nil
+}
+
+// fetchTools connects to one MCP server and returns its tool list plus the live client.
+func fetchTools(ctx context.Context, cfg config.ServerConfig) ([]mcp.Tool, *mcp.Client, error) {
+	client := mcp.NewClient(cfg)
+	if err := client.Connect(ctx); err != nil {
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+	tools, err := client.ListTools()
+	if err != nil {
+		return nil, nil, fmt.Errorf("list tools: %w", err)
+	}
+	return tools, client, nil
+}
+
+// cacheFile returns the path to the cache file for the given server name.
+func cacheFile(cacheDir, server string) string {
+	safe := strings.ReplaceAll(server, string(filepath.Separator), "_")
+	return filepath.Join(cacheDir, safe+".json")
+}
+
+// saveCache writes the tool list for a server to disk.
+func saveCache(cacheDir, server string, tools []mcp.Tool) error {
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(cachedServer{Server: server, Tools: tools})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(cacheFile(cacheDir, server), data, 0644)
+}
+
+// loadCache reads the cached tool list for a server from disk.
+// Returns nil if no cache exists or it cannot be read.
+func loadCache(cacheDir, server string) []mcp.Tool {
+	data, err := os.ReadFile(cacheFile(cacheDir, server))
+	if err != nil {
+		return nil
+	}
+	var c cachedServer
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil
+	}
+	return c.Tools
 }
 
 // schemaToParams converts an MCP JSON Schema to OpenTalon ParameterMsg slice.
