@@ -2,12 +2,73 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
+
+// sseTransport implements the transport interface over HTTP+SSE.
+type sseTransport struct {
+	conn       *sseConn
+	httpClient *http.Client
+	endpoint   string
+}
+
+func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResponse, error) {
+	if req.ID == nil {
+		return rpcResponse{}, fmt.Errorf("roundTrip requires a request ID")
+	}
+	id := *req.ID
+	ch := s.conn.subscribe(id)
+	defer s.conn.unsubscribe(id)
+
+	if err := s.post(req); err != nil {
+		return rpcResponse{}, err
+	}
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		return rpcResponse{}, fmt.Errorf("%s: timeout", req.Method)
+	case <-s.conn.ctx.Done():
+		return rpcResponse{}, fmt.Errorf("SSE closed during %s", req.Method)
+	}
+}
+
+func (s *sseTransport) notify(req rpcRequest) error {
+	return s.post(req)
+}
+
+func (s *sseTransport) post(req rpcRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(s.conn.ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build POST: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("POST: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("POST: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *sseTransport) context() context.Context { return s.conn.ctx }
+func (s *sseTransport) close()                    { s.conn.cancel() }
 
 // sseConn manages a persistent SSE connection to an MCP server.
 // It reads events from the stream and dispatches JSON-RPC responses
@@ -139,7 +200,7 @@ func (s *sseConn) handleEvent(eventType, data, sseURL string) {
 	case "", "message":
 		// JSON-RPC response
 		var resp rpcResponse
-		if err := jsonUnmarshal([]byte(data), &resp); err != nil {
+		if err := json.Unmarshal([]byte(data), &resp); err != nil {
 			return
 		}
 		s.dispatch(resp)
