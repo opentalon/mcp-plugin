@@ -102,3 +102,56 @@ func TestLoad_multipleServers(t *testing.T) {
 		t.Errorf("unexpected servers: %v, %v", cfgs[0].Server, cfgs[1].Server)
 	}
 }
+
+func TestParse_validWithServers(t *testing.T) {
+	cfg, err := Parse(`{"servers":[{"server":"s1","url":"http://localhost/sse"}]}`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Server != "s1" || cfg.Servers[0].URL != "http://localhost/sse" {
+		t.Errorf("unexpected server: %+v", cfg.Servers[0])
+	}
+}
+
+func TestParse_emptyObject(t *testing.T) {
+	cfg, err := Parse(`{}`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Errorf("got %d servers, want 0", len(cfg.Servers))
+	}
+}
+
+func TestParse_malformedJSON(t *testing.T) {
+	_, err := Parse(`not-json`)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+func TestParse_envExpansionInHeaders(t *testing.T) {
+	t.Setenv("MY_API_KEY", "key-abc")
+	cfg, err := Parse(`{
+		"servers":[{
+			"server":"s",
+			"url":"http://localhost/sse",
+			"headers":{
+				"Authorization":"Bearer {{env.MY_API_KEY}}",
+				"X-Static":"fixed"
+			}
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := cfg.Servers[0].Headers["Authorization"], "Bearer key-abc"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	if got, want := cfg.Servers[0].Headers["X-Static"], "fixed"; got != want {
+		t.Errorf("X-Static = %q, want %q", got, want)
+	}
+}

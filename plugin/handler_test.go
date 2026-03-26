@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/opentalon/mcp-plugin/mcp"
@@ -150,5 +151,65 @@ func TestHandler_Capabilities(t *testing.T) {
 	}
 	if len(caps.Actions) != 1 || caps.Actions[0].Name != "s__tool" {
 		t.Errorf("unexpected actions: %+v", caps.Actions)
+	}
+}
+
+// Nil-registry guard tests — before Configure or SetRegistry is called.
+
+func TestHandler_nilRegistry_Capabilities(t *testing.T) {
+	h := NewHandler(context.Background())
+	caps := h.Capabilities()
+	if caps.Name != "mcp" {
+		t.Errorf("Name = %q, want mcp", caps.Name)
+	}
+	if len(caps.Actions) != 0 {
+		t.Errorf("expected no actions before Configure, got %d", len(caps.Actions))
+	}
+}
+
+func TestHandler_nilRegistry_Execute(t *testing.T) {
+	h := NewHandler(context.Background())
+	resp := h.Execute(pluginpkg.Request{ID: "req-1", Action: "any"})
+	if resp.Error == "" {
+		t.Fatal("expected error from Execute before Configure")
+	}
+	if !strings.Contains(resp.Error, "not yet configured") {
+		t.Errorf("error = %q, want it to contain 'not yet configured'", resp.Error)
+	}
+	if resp.CallID != "req-1" {
+		t.Errorf("CallID = %q, want req-1", resp.CallID)
+	}
+}
+
+// Configure tests.
+
+func TestHandler_Configure_malformedJSON(t *testing.T) {
+	h := NewHandler(context.Background())
+	if err := h.Configure("not-json"); err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+func TestHandler_Configure_noServers(t *testing.T) {
+	h := NewHandler(context.Background())
+	if err := h.Configure(`{"servers":[]}`); err == nil {
+		t.Fatal("expected error for empty servers list")
+	}
+}
+
+// TestHandler_Configure_setsRegistry verifies that after a successful Configure
+// call the registry is non-nil. The server URL is intentionally unreachable;
+// Build logs the failure and returns an empty registry without an error, so
+// Configure should still set h.registry. We detect this by checking that
+// Execute returns "unknown action" rather than "not yet configured".
+func TestHandler_Configure_setsRegistry(t *testing.T) {
+	h := NewHandler(context.Background())
+	err := h.Configure(`{"servers":[{"server":"s1","url":"http://127.0.0.1:0/sse"}]}`)
+	if err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	resp := h.Execute(pluginpkg.Request{ID: "r1", Action: "s1__tool"})
+	if strings.Contains(resp.Error, "not yet configured") {
+		t.Errorf("registry was not set after Configure; error = %q", resp.Error)
 	}
 }
