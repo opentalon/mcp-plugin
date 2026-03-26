@@ -17,7 +17,29 @@ type ServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// PluginConfig is the top-level config block passed by the host via the Init
+// RPC. It mirrors the `config:` section of the plugin entry in config.yaml.
+type PluginConfig struct {
+	Servers  []ServerConfig `json:"servers"`
+	CacheDir string         `json:"cache_dir,omitempty"`
+}
+
 var envRe = regexp.MustCompile(`\{\{env\.(\w+)\}\}`)
+
+// Parse decodes configJSON (as sent by the host via the Init RPC) into a
+// PluginConfig and expands {{env.X}} templates in header values.
+func Parse(configJSON string) (*PluginConfig, error) {
+	var cfg PluginConfig
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	for i := range cfg.Servers {
+		for k, v := range cfg.Servers[i].Headers {
+			cfg.Servers[i].Headers[k] = expandEnv(v)
+		}
+	}
+	return &cfg, nil
+}
 
 // Load reads OPENTALON_MCP_SERVERS from the environment, parses the JSON
 // array, and expands {{env.X}} templates in header values.
