@@ -2,7 +2,7 @@ module github.com/opentalon/mcp-plugin
 
 go 1.24.0
 
-require github.com/opentalon/opentalon v0.0.2-0.20260309143319-6e1b9ac2323f
+require github.com/opentalon/opentalon v0.0.3
 
 require (
 	golang.org/x/net v0.48.0 // indirect
