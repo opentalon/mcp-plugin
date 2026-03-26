@@ -53,7 +53,7 @@ func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration) (rpcRe
 	if err != nil {
 		return rpcResponse{}, fmt.Errorf("POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return rpcResponse{}, fmt.Errorf("POST: HTTP %d", resp.StatusCode)

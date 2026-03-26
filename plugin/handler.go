@@ -1,32 +1,72 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/opentalon/mcp-plugin/config"
 	"github.com/opentalon/mcp-plugin/mcp"
 	pluginpkg "github.com/opentalon/opentalon/pkg/plugin"
 )
 
-// Handler implements pluginpkg.Handler using the MCP registry.
+// Handler implements pluginpkg.Handler (and pluginpkg.Configurable) using the MCP registry.
 type Handler struct {
+	ctx      context.Context
 	registry *Registry
 }
 
-// NewHandler wraps a Registry in a Handler.
-func NewHandler(r *Registry) *Handler {
-	return &Handler{registry: r}
+// NewHandler creates a Handler. The registry is nil until Configure is called
+// or SetRegistry is used directly (e.g. when bootstrapping from the env var).
+func NewHandler(ctx context.Context) *Handler {
+	return &Handler{ctx: ctx}
+}
+
+// SetRegistry sets the registry directly, used for env-var bootstrapping.
+func (h *Handler) SetRegistry(r *Registry) {
+	h.registry = r
+}
+
+// Configure implements pluginpkg.Configurable. It is called by the host via
+// the Init RPC before any Execute calls, with the JSON-encoded config block
+// from the host's config.yaml.
+func (h *Handler) Configure(configJSON string) error {
+	cfg, err := config.Parse(configJSON)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Servers) == 0 {
+		return fmt.Errorf("mcp-plugin: no servers in config")
+	}
+	registry, err := Build(h.ctx, cfg.Servers)
+	if err != nil {
+		return err
+	}
+	h.registry = registry
+	return nil
 }
 
 // Capabilities returns all namespaced MCP tools across all servers.
 func (h *Handler) Capabilities() pluginpkg.CapabilitiesMsg {
+	if h.registry == nil {
+		return pluginpkg.CapabilitiesMsg{
+			Name:        "mcp",
+			Description: "Universal MCP bridge: exposes tools from all configured MCP servers",
+		}
+	}
 	return h.registry.caps
 }
 
 // Execute routes a tool call to the correct MCP server.
 func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
+	if h.registry == nil {
+		return pluginpkg.Response{
+			CallID: req.ID,
+			Error:  "mcp-plugin: not yet configured",
+		}
+	}
 	e, ok := h.registry.actions[req.Action]
 	if !ok {
 		return pluginpkg.Response{

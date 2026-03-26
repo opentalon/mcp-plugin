@@ -13,21 +13,25 @@ import (
 )
 
 func main() {
-	cfgs, err := config.Load()
-	if err != nil {
-		log.Fatalf("mcp-plugin: load config: %v", err)
-	}
-	if len(cfgs) == 0 {
-		log.Fatalf("mcp-plugin: no MCP server configs found in OPENTALON_MCP_SERVERS")
-	}
-
 	ctx := context.Background()
-	registry, err := mcpplugin.Build(ctx, cfgs)
-	if err != nil {
-		log.Fatalf("mcp-plugin: build registry: %v", err)
-	}
+	handler := mcpplugin.NewHandler(ctx)
 
-	handler := mcpplugin.NewHandler(registry)
+	// Backward-compat: if OPENTALON_MCP_SERVERS is set, bootstrap from it
+	// directly so the plugin works without a host Init RPC (e.g. TCP standalone mode).
+	if os.Getenv("OPENTALON_MCP_SERVERS") != "" {
+		cfgs, err := config.Load()
+		if err != nil {
+			log.Fatalf("mcp-plugin: load config: %v", err)
+		}
+		if len(cfgs) == 0 {
+			log.Fatalf("mcp-plugin: no MCP server configs found in OPENTALON_MCP_SERVERS")
+		}
+		registry, err := mcpplugin.Build(ctx, cfgs)
+		if err != nil {
+			log.Fatalf("mcp-plugin: build registry: %v", err)
+		}
+		handler.SetRegistry(registry)
+	}
 
 	// TCP mode: MCP_GRPC_PORT=50051 → listen on TCP; print handshake; serve.
 	if port := os.Getenv("MCP_GRPC_PORT"); port != "" {
@@ -50,6 +54,7 @@ func main() {
 	}
 
 	// Default: Unix socket mode (launched as subprocess by OpenTalon).
+	// Config is received via the Init RPC → handler.Configure().
 	if err := pluginpkg.Serve(handler); err != nil {
 		log.Fatalf("mcp-plugin: serve: %v", err)
 	}
