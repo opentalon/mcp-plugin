@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/opentalon/mcp-plugin/config"
@@ -357,6 +358,163 @@ func TestStreamable_SessionID(t *testing.T) {
 	}
 	if st.sessionID != "test-session-123" {
 		t.Errorf("sessionID = %q, want test-session-123", st.sessionID)
+	}
+}
+
+// --- SSE-framed Streamable HTTP server (FastMCP / mcp-atlassian style) ---
+//
+// Some MCP servers (e.g. FastMCP) respond to Streamable HTTP POSTs with
+// Content-Type: text/event-stream even for synchronous round-trips.  The body
+// is SSE-framed: "event: message\ndata: {…}\n\n".  These tests exercise that
+// path end-to-end and verify that reconnects work (bug #2).
+
+type fakeSSEFramedStreamableServer struct {
+	srv *httptest.Server
+}
+
+func newFakeSSEFramedStreamableServer(t *testing.T) *fakeSSEFramedStreamableServer {
+	t.Helper()
+	fs := &fakeSSEFramedStreamableServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", fs.handleMCP(t))
+	fs.srv = httptest.NewServer(mux)
+	t.Cleanup(fs.srv.Close)
+	return fs
+}
+
+func (fs *fakeSSEFramedStreamableServer) cfg() config.ServerConfig {
+	return config.ServerConfig{Server: "test-sse-framed", URL: fs.srv.URL + "/mcp"}
+}
+
+func (fs *fakeSSEFramedStreamableServer) handleMCP(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Require the correct Accept header (bug #1 guard).
+		accept := r.Header.Get("Accept")
+		if !strings.Contains(accept, "text/event-stream") {
+			http.Error(w, "406 Not Acceptable", http.StatusNotAcceptable)
+			return
+		}
+
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[
+				{"name":"echo","description":"Echo input","inputSchema":{
+					"type":"object",
+					"properties":{"text":{"type":"string","description":"Text to echo"}},
+					"required":["text"]
+				}}
+			]}`)
+		case "tools/call":
+			b, _ := json.Marshal(req.Params)
+			var p struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			}
+			_ = json.Unmarshal(b, &p)
+			text, _ := p.Arguments["text"].(string)
+			r, _ := json.Marshal(toolsCallResult{
+				Content: []Content{{Type: "text", Text: text}},
+			})
+			result = r
+		default:
+			result = json.RawMessage(`{}`)
+		}
+
+		resp := rpcResponse{JSONRPC: "2.0", ID: float64(*req.ID), Result: result}
+		data, _ := json.Marshal(resp)
+
+		// Respond with SSE framing — same as FastMCP / mcp-atlassian.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Mcp-Session-Id", "sse-framed-session")
+		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+	}
+}
+
+func TestStreamableSSEFramed_Connect(t *testing.T) {
+	srv := newFakeSSEFramedStreamableServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if _, ok := c.tp.(*streamableHTTP); !ok {
+		t.Errorf("expected streamableHTTP transport, got %T", c.tp)
+	}
+}
+
+func TestStreamableSSEFramed_ListTools(t *testing.T) {
+	srv := newFakeSSEFramedStreamableServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	tools, err := c.ListTools()
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "echo" {
+		t.Errorf("unexpected tools: %+v", tools)
+	}
+}
+
+func TestStreamableSSEFramed_CallTool(t *testing.T) {
+	srv := newFakeSSEFramedStreamableServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	got, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got != "fastmcp hello" {
+		t.Errorf("content = %q, want %q", got, "fastmcp hello")
+	}
+}
+
+// TestStreamableSSEFramed_Reconnect verifies that a second Connect() call on a
+// fresh client succeeds — this was bug #2 where retries always reported
+// "Streamable HTTP unavailable" because SSE framing was never decoded.
+func TestStreamableSSEFramed_Reconnect(t *testing.T) {
+	srv := newFakeSSEFramedStreamableServer(t)
+	ctx := testCtx(t)
+
+	for i := range 2 {
+		c := NewClient(srv.cfg())
+		if err := c.Connect(ctx); err != nil {
+			t.Fatalf("Connect attempt %d: %v", i+1, err)
+		}
+		if _, ok := c.tp.(*streamableHTTP); !ok {
+			t.Errorf("attempt %d: expected streamableHTTP transport, got %T", i+1, c.tp)
+		}
+	}
+}
+
+// TestStreamableSSEFramed_AcceptHeader verifies that the client sends the
+// Accept: application/json, text/event-stream header (bug #1).  The fake
+// server returns 406 if the header is absent or wrong.
+func TestStreamableSSEFramed_AcceptHeader(t *testing.T) {
+	srv := newFakeSSEFramedStreamableServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect failed (likely missing Accept header): %v", err)
 	}
 }
 
