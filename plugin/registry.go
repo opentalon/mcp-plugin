@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/opentalon/mcp-plugin/config"
 	"github.com/opentalon/mcp-plugin/mcp"
@@ -21,10 +22,12 @@ type entry struct {
 	client      *mcp.Client
 	mcpToolName string
 	schema      mcp.InputSchema
+	cfg         config.ServerConfig // used to reconnect when client is nil or dead
 }
 
 // Registry holds all connected MCP clients and their tool mappings.
 type Registry struct {
+	mu      sync.RWMutex
 	actions map[string]entry   // key: namespaced action name, e.g. "filesystem__read_file"
 	caps    pluginpkg.CapabilitiesMsg
 }
@@ -78,6 +81,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				client:      client,
 				mcpToolName: tool.Name,
 				schema:      tool.InputSchema,
+				cfg:         cfg,
 			}
 
 			desc := tool.Description
@@ -164,6 +168,26 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 		})
 	}
 	return params
+}
+
+// reconnect creates a fresh client for the server in cfg and, on success,
+// updates every action entry for that server so subsequent calls use the new connection.
+// It returns the new client so the caller can proceed immediately.
+func (r *Registry) reconnect(ctx context.Context, cfg config.ServerConfig) (*mcp.Client, error) {
+	client := mcp.NewClient(cfg)
+	if err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	for k, e := range r.actions {
+		if e.cfg.Server == cfg.Server {
+			e.client = client
+			r.actions[k] = e
+		}
+	}
+	r.mu.Unlock()
+	log.Printf("mcp-plugin: server %s: reconnected", cfg.Server)
+	return client, nil
 }
 
 func mapType(schemaType string) string {

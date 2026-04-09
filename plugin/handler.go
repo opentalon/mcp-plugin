@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -67,7 +68,11 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 			Error:  "mcp-plugin: not yet configured",
 		}
 	}
+
+	h.registry.mu.RLock()
 	e, ok := h.registry.actions[req.Action]
+	h.registry.mu.RUnlock()
+
 	if !ok {
 		return pluginpkg.Response{
 			CallID: req.ID,
@@ -75,11 +80,17 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		}
 	}
 
-	if e.client == nil {
-		return pluginpkg.Response{
-			CallID: req.ID,
-			Error:  fmt.Sprintf("MCP server for action %q is currently offline (loaded from cache)", req.Action),
+	if e.client == nil || !e.client.IsAlive() {
+		log.Printf("mcp-plugin: server %s: offline or disconnected for action %q, reconnecting", e.cfg.Server, req.Action)
+		client, err := h.registry.reconnect(h.ctx, e.cfg)
+		if err != nil {
+			log.Printf("mcp-plugin: server %s: reconnect failed: %v", e.cfg.Server, err)
+			return pluginpkg.Response{
+				CallID: req.ID,
+				Error:  fmt.Sprintf("MCP server %q is offline (reconnect failed: %v)", e.cfg.Server, err),
+			}
 		}
+		e.client = client
 	}
 
 	// Convert flat string args to typed interface{} map using the schema.

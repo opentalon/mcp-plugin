@@ -195,6 +195,11 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 // ServerName returns the configured server name.
 func (c *Client) ServerName() string { return c.cfg.Server }
 
+// IsAlive reports whether the client has an active transport connection.
+func (c *Client) IsAlive() bool {
+	return c.tp != nil && c.tp.context().Err() == nil
+}
+
 func (c *Client) nextID() int64 {
 	return c.idCounter.Add(1)
 }
