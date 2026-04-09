@@ -28,7 +28,7 @@ type entry struct {
 // Registry holds all connected MCP clients and their tool mappings.
 type Registry struct {
 	mu      sync.RWMutex
-	actions map[string]entry   // key: namespaced action name, e.g. "filesystem__read_file"
+	actions map[string]entry // key: namespaced action name, e.g. "filesystem__read_file"
 	caps    pluginpkg.CapabilitiesMsg
 }
 

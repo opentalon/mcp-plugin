@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -166,6 +167,16 @@ func (s *sseConn) readLoop(resp *http.Response, sseURL string) {
 	defer s.cancel()
 
 	scanner := bufio.NewScanner(resp.Body)
+	var scanErr error
+	defer func() {
+		if s.ctx.Err() == nil { // not cancelled by us — unexpected drop
+			if scanErr != nil {
+				log.Printf("mcp-plugin: SSE stream %s disconnected: %v", sseURL, scanErr)
+			} else {
+				log.Printf("mcp-plugin: SSE stream %s disconnected (server closed connection)", sseURL)
+			}
+		}
+	}()
 	var eventType string
 	var dataLines []string
 
@@ -187,6 +198,7 @@ func (s *sseConn) readLoop(resp *http.Response, sseURL string) {
 		}
 		// comments (": ...") and unknown fields are ignored per SSE spec
 	}
+	scanErr = scanner.Err()
 }
 
 func (s *sseConn) handleEvent(eventType, data, sseURL string) {
