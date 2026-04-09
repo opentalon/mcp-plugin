@@ -34,18 +34,24 @@ func (h *Handler) SetRegistry(r *Registry) {
 // the Init RPC before any Execute calls, with the JSON-encoded config block
 // from the host's config.yaml.
 func (h *Handler) Configure(configJSON string) error {
+	log.Printf("mcp-plugin: Configure begin (before parse)")
 	cfg, err := config.Parse(configJSON)
 	if err != nil {
+		log.Printf("mcp-plugin: Configure parse err: %v", err)
 		return err
 	}
 	if len(cfg.Servers) == 0 {
 		return fmt.Errorf("mcp-plugin: no servers in config")
 	}
+	log.Printf("mcp-plugin: Configure parsed servers=%d (before Build)", len(cfg.Servers))
 	registry, err := Build(h.ctx, cfg.Servers)
 	if err != nil {
+		log.Printf("mcp-plugin: Configure Build err: %v", err)
 		return err
 	}
 	h.registry = registry
+	log.Printf("mcp-plugin: init done (Configure): registry ready servers=%d actions=%d",
+		len(cfg.Servers), len(registry.actions))
 	return nil
 }
 
@@ -62,7 +68,10 @@ func (h *Handler) Capabilities() pluginpkg.CapabilitiesMsg {
 
 // Execute routes a tool call to the correct MCP server.
 func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
+	log.Printf("mcp-plugin: Execute begin call_id=%s action=%q", req.ID, req.Action)
+
 	if h.registry == nil {
+		log.Printf("mcp-plugin: Execute call_id=%s err: not yet configured", req.ID)
 		return pluginpkg.Response{
 			CallID: req.ID,
 			Error:  "mcp-plugin: not yet configured",
@@ -74,11 +83,14 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	h.registry.mu.RUnlock()
 
 	if !ok {
+		log.Printf("mcp-plugin: Execute call_id=%s unknown action=%q", req.ID, req.Action)
 		return pluginpkg.Response{
 			CallID: req.ID,
 			Error:  fmt.Sprintf("unknown action %q", req.Action),
 		}
 	}
+
+	log.Printf("mcp-plugin: Execute call_id=%s resolved server=%q mcp_tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
 
 	if e.client == nil || !e.client.IsAlive() {
 		reason := "loaded from cache (server was offline at startup)"
@@ -103,12 +115,15 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 
 	// Convert flat string args to typed interface{} map using the schema.
 	args := convertArgs(req.Args, e.schema)
+	log.Printf("mcp-plugin: Execute call_id=%s before CallTool server=%q tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
 
 	content, err := e.client.CallTool(e.mcpToolName, args)
 	if err != nil {
+		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)
 		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", e.cfg.Server, e.mcpToolName, err)
 		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
 	}
+	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d", req.ID, len(content))
 	return pluginpkg.Response{CallID: req.ID, Content: content}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,7 @@ func NewClient(cfg config.ServerConfig) *Client {
 
 // Connect auto-detects the transport and performs the MCP initialize handshake.
 func (c *Client) Connect(ctx context.Context) error {
+	log.Printf("mcp-plugin: server %s: Connect begin url=%s", c.cfg.Server, c.cfg.URL)
 	c.httpClient = &http.Client{
 		Transport: &headerTransport{
 			base:    http.DefaultTransport,
@@ -40,16 +42,23 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	// Try Streamable HTTP first.
 	if err := c.tryStreamableHTTP(ctx); err == nil {
+		log.Printf("mcp-plugin: server %s: Connect done (transport=StreamableHTTP)", c.cfg.Server)
 		return nil
 	} else {
 		log.Printf("mcp-plugin: server %s: Streamable HTTP failed (%v), trying SSE", c.cfg.Server, err)
 	}
-	return c.connectSSE(ctx)
+	if err := c.connectSSE(ctx); err != nil {
+		log.Printf("mcp-plugin: server %s: Connect failed: %v", c.cfg.Server, err)
+		return err
+	}
+	log.Printf("mcp-plugin: server %s: Connect done (transport=SSE)", c.cfg.Server)
+	return nil
 }
 
 // tryStreamableHTTP attempts to connect using the Streamable HTTP transport.
 func (c *Client) tryStreamableHTTP(ctx context.Context) error {
-	st := newStreamableHTTP(ctx, c.httpClient, c.cfg.URL)
+	log.Printf("mcp-plugin: server %s: initialize via StreamableHTTP (before roundTrip)", c.cfg.Server)
+	st := newStreamableHTTP(ctx, c.httpClient, c.cfg.URL, c.cfg.Server)
 
 	id := c.nextID()
 	initReq := rpcRequest{
@@ -78,12 +87,13 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 	_ = st.notify(notif)
 
 	c.tp = st
-	log.Printf("mcp-plugin: server %s: connected via Streamable HTTP", c.cfg.Server)
+	log.Printf("mcp-plugin: server %s: connected via Streamable HTTP (after initialize + notifications/initialized)", c.cfg.Server)
 	return nil
 }
 
 // connectSSE connects using the legacy HTTP+SSE transport.
 func (c *Client) connectSSE(ctx context.Context) error {
+	log.Printf("mcp-plugin: server %s: connectSSE begin", c.cfg.Server)
 	sse := newSSEConn(ctx)
 
 	endpoint, err := sse.connect(c.httpClient, c.cfg.URL)
@@ -91,9 +101,10 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		return fmt.Errorf("server %s: SSE: %w", c.cfg.Server, err)
 	}
 
-	tp := &sseTransport{conn: sse, httpClient: c.httpClient, endpoint: endpoint}
+	tp := &sseTransport{conn: sse, httpClient: c.httpClient, endpoint: endpoint, server: c.cfg.Server}
 
 	// MCP initialize.
+	log.Printf("mcp-plugin: server %s: SSE initialize (before roundTrip)", c.cfg.Server)
 	id := c.nextID()
 	initReq := rpcRequest{
 		JSONRPC: "2.0",
@@ -121,13 +132,14 @@ func (c *Client) connectSSE(ctx context.Context) error {
 	_ = tp.notify(notif)
 
 	c.tp = tp
-	log.Printf("mcp-plugin: server %s: connected via SSE", c.cfg.Server)
+	log.Printf("mcp-plugin: server %s: connected via SSE (after initialize + notifications/initialized)", c.cfg.Server)
 	return nil
 }
 
 // ListTools calls tools/list and returns the server's tool list.
 func (c *Client) ListTools() ([]Tool, error) {
 	id := c.nextID()
+	log.Printf("mcp-plugin: server %s: ListTools begin jsonrpc_id=%d", c.cfg.Server, id)
 	req := rpcRequest{
 		JSONRPC: "2.0",
 		ID:      &id,
@@ -137,21 +149,33 @@ func (c *Client) ListTools() ([]Tool, error) {
 
 	resp, err := c.tp.roundTrip(req, 30*time.Second)
 	if err != nil {
+		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d err: %v", c.cfg.Server, id, err)
 		return nil, err
 	}
 	if resp.Error != nil {
+		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d rpc error: %s", c.cfg.Server, id, resp.Error.Message)
 		return nil, fmt.Errorf("tools/list: %s", resp.Error.Message)
 	}
 	var result toolsListResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d decode err: %v", c.cfg.Server, id, err)
 		return nil, fmt.Errorf("decode tools/list: %w", err)
 	}
+	log.Printf("mcp-plugin: server %s: ListTools ok jsonrpc_id=%d count=%d", c.cfg.Server, id, len(result.Tools))
 	return result.Tools, nil
 }
 
 // CallTool invokes an MCP tool and returns the text content of the response.
 func (c *Client) CallTool(name string, args map[string]interface{}) (string, error) {
 	id := c.nextID()
+	argKeys := make([]string, 0, len(args))
+	for k := range args {
+		argKeys = append(argKeys, k)
+	}
+	sort.Strings(argKeys)
+	log.Printf("mcp-plugin: server %s: CallTool begin tool=%q jsonrpc_id=%d arg_count=%d arg_keys=%v",
+		c.cfg.Server, name, id, len(args), argKeys)
+
 	req := rpcRequest{
 		JSONRPC: "2.0",
 		ID:      &id,
@@ -164,22 +188,26 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 
 	resp, err := c.tp.roundTrip(req, 60*time.Second)
 	if err != nil {
+		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d err: %v", c.cfg.Server, name, id, err)
 		return "", err
 	}
 	if resp.Error != nil {
+		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d rpc error: %s", c.cfg.Server, name, id, resp.Error.Message)
 		return "", fmt.Errorf("tools/call %s: %s", name, resp.Error.Message)
 	}
 	var result toolsCallResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d decode err: %v", c.cfg.Server, name, id, err)
 		return "", fmt.Errorf("decode tools/call: %w", err)
 	}
 	if result.IsError {
 		var parts []string
-		for _, c := range result.Content {
-			if c.Text != "" {
-				parts = append(parts, c.Text)
+		for _, co := range result.Content {
+			if co.Text != "" {
+				parts = append(parts, co.Text)
 			}
 		}
+		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d tool error in body", c.cfg.Server, name, id)
 		return "", fmt.Errorf("tool %s error: %s", name, strings.Join(parts, "; "))
 	}
 	var parts []string
@@ -188,7 +216,9 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 			parts = append(parts, item.Text)
 		}
 	}
-	return strings.Join(parts, "\n"), nil
+	out := strings.Join(parts, "\n")
+	log.Printf("mcp-plugin: server %s: CallTool ok tool=%q jsonrpc_id=%d content_len=%d", c.cfg.Server, name, id, len(out))
+	return out, nil
 }
 
 // ServerName returns the configured server name.
