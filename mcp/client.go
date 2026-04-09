@@ -41,10 +41,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Try Streamable HTTP first.
 	if err := c.tryStreamableHTTP(ctx); err == nil {
 		return nil
+	} else {
+		log.Printf("mcp-plugin: server %s: Streamable HTTP failed (%v), trying SSE", c.cfg.Server, err)
 	}
-
-	// Fall back to SSE.
-	log.Printf("mcp-plugin: server %s: Streamable HTTP unavailable, trying SSE", c.cfg.Server)
 	return c.connectSSE(ctx)
 }
 
@@ -198,6 +197,15 @@ func (c *Client) ServerName() string { return c.cfg.Server }
 // IsAlive reports whether the client has an active transport connection.
 func (c *Client) IsAlive() bool {
 	return c.tp != nil && c.tp.context().Err() == nil
+}
+
+// TransportContextErr returns the transport context error if the transport is
+// dead, or nil if it is alive (or not yet initialized).
+func (c *Client) TransportContextErr() error {
+	if c.tp == nil {
+		return nil
+	}
+	return c.tp.context().Err()
 }
 
 func (c *Client) nextID() int64 {

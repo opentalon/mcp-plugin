@@ -81,7 +81,15 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	}
 
 	if e.client == nil || !e.client.IsAlive() {
-		log.Printf("mcp-plugin: server %s: offline or disconnected for action %q, reconnecting", e.cfg.Server, req.Action)
+		reason := "loaded from cache (server was offline at startup)"
+		if e.client != nil {
+			if ctxErr := e.client.TransportContextErr(); ctxErr != nil {
+				reason = fmt.Sprintf("transport context done: %v", ctxErr)
+			} else {
+				reason = "transport context done (unknown)"
+			}
+		}
+		log.Printf("mcp-plugin: server %s: not alive for action %q (%s), reconnecting", e.cfg.Server, req.Action, reason)
 		client, err := h.registry.reconnect(h.ctx, e.cfg)
 		if err != nil {
 			log.Printf("mcp-plugin: server %s: reconnect failed: %v", e.cfg.Server, err)
@@ -98,6 +106,7 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 
 	content, err := e.client.CallTool(e.mcpToolName, args)
 	if err != nil {
+		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", e.cfg.Server, e.mcpToolName, err)
 		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
 	}
 	return pluginpkg.Response{CallID: req.ID, Content: content}
