@@ -43,6 +43,7 @@ type cachedServer struct {
 // If a server is unreachable and a cache exists, the cached spec is used
 // so the LLM still knows what tools are available.
 func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
+	log.Printf("mcp-plugin: Build begin servers=%d", len(cfgs))
 	cacheDir := config.CacheDir()
 
 	r := &Registry{
@@ -54,6 +55,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 	}
 
 	for _, cfg := range cfgs {
+		log.Printf("mcp-plugin: Build server %q url=%s (before fetchTools)", cfg.Server, cfg.URL)
 		tools, client, err := fetchTools(ctx, cfg)
 		if err != nil {
 			log.Printf("mcp-plugin: server %s: %v", cfg.Server, err)
@@ -97,19 +99,25 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 		}
 	}
 
+	log.Printf("mcp-plugin: Build done actions=%d", len(r.actions))
 	return r, nil
 }
 
 // fetchTools connects to one MCP server and returns its tool list plus the live client.
 func fetchTools(ctx context.Context, cfg config.ServerConfig) ([]mcp.Tool, *mcp.Client, error) {
+	log.Printf("mcp-plugin: fetchTools server %q: NewClient + Connect (before)", cfg.Server)
 	client := mcp.NewClient(cfg)
 	if err := client.Connect(ctx); err != nil {
+		log.Printf("mcp-plugin: fetchTools server %q: Connect err: %v", cfg.Server, err)
 		return nil, nil, fmt.Errorf("connect: %w", err)
 	}
+	log.Printf("mcp-plugin: fetchTools server %q: Connect ok, ListTools (before)", cfg.Server)
 	tools, err := client.ListTools()
 	if err != nil {
+		log.Printf("mcp-plugin: fetchTools server %q: ListTools err: %v", cfg.Server, err)
 		return nil, nil, fmt.Errorf("list tools: %w", err)
 	}
+	log.Printf("mcp-plugin: fetchTools server %q: ListTools ok tools=%d", cfg.Server, len(tools))
 	return tools, client, nil
 }
 
@@ -174,10 +182,13 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 // updates every action entry for that server so subsequent calls use the new connection.
 // It returns the new client so the caller can proceed immediately.
 func (r *Registry) reconnect(ctx context.Context, cfg config.ServerConfig) (*mcp.Client, error) {
+	log.Printf("mcp-plugin: reconnect server %q url=%s (before Connect)", cfg.Server, cfg.URL)
 	client := mcp.NewClient(cfg)
 	if err := client.Connect(ctx); err != nil {
+		log.Printf("mcp-plugin: reconnect server %q: Connect err: %v", cfg.Server, err)
 		return nil, err
 	}
+	log.Printf("mcp-plugin: reconnect server %q: Connect ok (before registry update)", cfg.Server)
 	r.mu.Lock()
 	for k, e := range r.actions {
 		if e.cfg.Server == cfg.Server {

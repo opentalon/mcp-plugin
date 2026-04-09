@@ -18,6 +18,7 @@ type sseTransport struct {
 	conn       *sseConn
 	httpClient *http.Client
 	endpoint   string
+	server     string // config server key; only for logs
 }
 
 func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResponse, error) {
@@ -25,25 +26,39 @@ func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResp
 		return rpcResponse{}, fmt.Errorf("roundTrip requires a request ID")
 	}
 	id := *req.ID
+	log.Printf("mcp-plugin: server %s: SSE → %s jsonrpc_id=%d timeout=%v (subscribe + before POST)", s.server, req.Method, id, timeout)
+
 	ch := s.conn.subscribe(id)
 	defer s.conn.unsubscribe(id)
 
 	if err := s.post(req); err != nil {
+		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d POST failed: %v", s.server, req.Method, id, err)
 		return rpcResponse{}, err
 	}
+	log.Printf("mcp-plugin: server %s: SSE … %s jsonrpc_id=%d POST accepted, waiting for SSE event", s.server, req.Method, id)
 
 	select {
 	case resp := <-ch:
+		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d ok (response received)", s.server, req.Method, id)
 		return resp, nil
 	case <-time.After(timeout):
+		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d timeout after %v", s.server, req.Method, id, timeout)
 		return rpcResponse{}, fmt.Errorf("%s: timeout", req.Method)
 	case <-s.conn.ctx.Done():
+		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d transport closed: %v", s.server, req.Method, id, s.conn.ctx.Err())
 		return rpcResponse{}, fmt.Errorf("SSE closed during %s", req.Method)
 	}
 }
 
 func (s *sseTransport) notify(req rpcRequest) error {
-	return s.post(req)
+	log.Printf("mcp-plugin: server %s: SSE → %s (notify, before POST)", s.server, req.Method)
+	err := s.post(req)
+	if err != nil {
+		log.Printf("mcp-plugin: server %s: SSE ← notify %s err: %v", s.server, req.Method, err)
+		return err
+	}
+	log.Printf("mcp-plugin: server %s: SSE ← notify %s ok", s.server, req.Method)
+	return nil
 }
 
 func (s *sseTransport) post(req rpcRequest) error {
@@ -128,12 +143,15 @@ func (s *sseConn) dispatch(resp rpcResponse) {
 	s.mu.Unlock()
 	if ok {
 		ch <- resp
+	} else {
+		log.Printf("mcp-plugin: SSE dispatch: jsonrpc_id=%d has no subscriber (response dropped; likely arrived before subscribe or wrong id)", id)
 	}
 }
 
 // connect opens the SSE stream to sseURL and starts reading events in a
 // goroutine. It returns the per-session POST endpoint URL.
 func (s *sseConn) connect(httpClient *http.Client, sseURL string) (string, error) {
+	log.Printf("mcp-plugin: SSE GET connect (before request) url=%s", sseURL)
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("build SSE request: %w", err)
@@ -143,20 +161,25 @@ func (s *sseConn) connect(httpClient *http.Client, sseURL string) (string, error
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		log.Printf("mcp-plugin: SSE GET connect failed: %v", err)
 		return "", fmt.Errorf("SSE connect: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
+		log.Printf("mcp-plugin: SSE GET connect HTTP %d", resp.StatusCode)
 		return "", fmt.Errorf("SSE connect: HTTP %d", resp.StatusCode)
 	}
+	log.Printf("mcp-plugin: SSE GET connect HTTP 200, starting readLoop (waiting for endpoint event)")
 
 	go s.readLoop(resp, sseURL)
 
 	// Wait for the endpoint event (first event from server).
 	select {
 	case ep := <-s.endpointCh:
+		log.Printf("mcp-plugin: SSE endpoint resolved POST url=%s", ep)
 		return ep, nil
 	case <-s.ctx.Done():
+		log.Printf("mcp-plugin: SSE endpoint wait cancelled: %v", s.ctx.Err())
 		return "", s.ctx.Err()
 	}
 }
