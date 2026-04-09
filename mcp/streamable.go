@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -65,10 +67,37 @@ func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration) (rpcRe
 	}
 
 	var rpcResp rpcResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		rpcResp, err = decodeSSEResponse(resp.Body)
+	} else {
+		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
+	}
+	if err != nil {
 		return rpcResponse{}, fmt.Errorf("decode response: %w", err)
 	}
 	return rpcResp, nil
+}
+
+// decodeSSEResponse reads an SSE-framed response body and JSON-decodes the
+// first "data:" payload found. MCP Streamable HTTP servers (e.g. FastMCP) may
+// return Content-Type: text/event-stream even for single-response round-trips.
+func decodeSSEResponse(body interface{ Read([]byte) (int, error) }) (rpcResponse, error) {
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			var r rpcResponse
+			if err := json.Unmarshal([]byte(payload), &r); err != nil {
+				return rpcResponse{}, fmt.Errorf("decode SSE data: %w", err)
+			}
+			return r, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return rpcResponse{}, fmt.Errorf("read SSE stream: %w", err)
+	}
+	return rpcResponse{}, fmt.Errorf("no data event in SSE response")
 }
 
 func (s *streamableHTTP) notify(req rpcRequest) error {
