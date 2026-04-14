@@ -190,6 +190,7 @@ func (s *sseConn) readLoop(resp *http.Response, sseURL string) {
 	defer s.cancel()
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), sseMaxTokenSize)
 	var scanErr error
 	defer func() {
 		if s.ctx.Err() == nil { // not cancelled by us — unexpected drop
