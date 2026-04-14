@@ -96,8 +96,11 @@ func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration) (rpcRe
 // decodeSSEResponse reads an SSE-framed response body and JSON-decodes the
 // first "data:" payload found. MCP Streamable HTTP servers (e.g. FastMCP) may
 // return Content-Type: text/event-stream even for single-response round-trips.
+const sseMaxTokenSize = 4 * 1024 * 1024 // 4 MB; handles large tools/list payloads
+
 func decodeSSEResponse(body interface{ Read([]byte) (int, error) }) (rpcResponse, error) {
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), sseMaxTokenSize)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "data:") {

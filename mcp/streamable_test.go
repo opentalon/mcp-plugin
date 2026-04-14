@@ -70,3 +70,18 @@ func TestDecodeSSEResponse_invalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON payload, got nil")
 	}
 }
+
+func TestDecodeSSEResponse_largePayload(t *testing.T) {
+	// Simulate a tools/list response whose data line exceeds the default
+	// bufio.Scanner buffer (64 KB). The fix bumps the limit to sseMaxTokenSize.
+	bigValue := strings.Repeat("x", 128*1024) // 128 KB
+	payload := `{"jsonrpc":"2.0","id":1,"result":{"big":"` + bigValue + `"}}`
+	body := "data: " + payload + "\n\n"
+	r, err := decodeSSEResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("unexpected error for large payload: %v", err)
+	}
+	if r.JSONRPC != "2.0" {
+		t.Errorf("JSONRPC = %q, want 2.0", r.JSONRPC)
+	}
+}
