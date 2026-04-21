@@ -59,6 +59,44 @@ type SchemaProp struct {
 	Description string `json:"description,omitempty"`
 }
 
+// UnmarshalJSON handles the JSON Schema spec where "type" may be either a
+// string ("string") or an array of strings (["string", "null"]).
+// When an array is provided, the first non-"null" element is used.
+func (s *SchemaProp) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion.
+	type schemaPropAlias struct {
+		Type        json.RawMessage `json:"type"`
+		Description string          `json:"description,omitempty"`
+	}
+	var alias schemaPropAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	s.Description = alias.Description
+	if len(alias.Type) == 0 {
+		return nil
+	}
+	// Try string first.
+	if alias.Type[0] == '"' {
+		return json.Unmarshal(alias.Type, &s.Type)
+	}
+	// Try array: pick first non-"null" element.
+	var types []string
+	if err := json.Unmarshal(alias.Type, &types); err != nil {
+		return err
+	}
+	for _, t := range types {
+		if t != "null" {
+			s.Type = t
+			return nil
+		}
+	}
+	if len(types) > 0 {
+		s.Type = types[0]
+	}
+	return nil
+}
+
 type toolsListResult struct {
 	Tools []Tool `json:"tools"`
 }
