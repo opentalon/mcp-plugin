@@ -259,7 +259,7 @@ func TestClient_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"})
+	got, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -274,9 +274,80 @@ func TestClient_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{})
+	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
+	}
+}
+
+// TestClient_CallTool_extraHeaders verifies that per-request credential headers
+// are sent to the upstream MCP server and override static config headers.
+func TestClient_CallTool_extraHeaders(t *testing.T) {
+	var capturedHeaders http.Header
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Capture headers from the tools/call request.
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if req.Method == "tools/call" {
+			capturedHeaders = r.Header.Clone()
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object","properties":{"text":{"type":"string"}}}}]}`)
+		case "tools/call":
+			result = json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		resp := rpcResponse{JSONRPC: "2.0", ID: float64(*req.ID), Result: result}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := config.ServerConfig{
+		Server:  "timly",
+		URL:     srv.URL + "/mcp",
+		Headers: map[string]string{"X-Static": "from-config"},
+	}
+	c := NewClient(cfg)
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	extra := http.Header{}
+	extra.Set("X-Timly-User", "user-123")
+	extra.Set("X-Static", "from-whoami") // should override static
+
+	_, err := c.CallTool("echo", map[string]interface{}{"text": "hi"}, extra)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if capturedHeaders == nil {
+		t.Fatal("tools/call request was not captured")
+	}
+	if got := capturedHeaders.Get("X-Timly-User"); got != "user-123" {
+		t.Errorf("X-Timly-User = %q, want user-123", got)
+	}
+	if got := capturedHeaders.Get("X-Static"); got != "from-whoami" {
+		t.Errorf("X-Static = %q, want from-whoami (credential headers should override static)", got)
 	}
 }
 
@@ -325,7 +396,7 @@ func TestStreamable_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"})
+	got, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -340,7 +411,7 @@ func TestStreamable_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{})
+	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -480,7 +551,7 @@ func TestStreamableSSEFramed_CallTool(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"})
+	got, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}

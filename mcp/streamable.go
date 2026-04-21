@@ -35,7 +35,7 @@ func newStreamableHTTP(ctx context.Context, httpClient *http.Client, url, server
 	}
 }
 
-func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration) (rpcResponse, error) {
+func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
 	method := req.Method
 	var reqID int64
 	if req.ID != nil {
@@ -51,6 +51,7 @@ func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration) (rpcRe
 
 	ctx, cancel := context.WithTimeout(s.ctx, timeout)
 	defer cancel()
+	ctx = contextWithExtraHeaders(ctx, extraHeaders)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
