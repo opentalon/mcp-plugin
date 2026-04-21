@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -40,15 +42,27 @@ func (c *Client) Connect(ctx context.Context) error {
 		},
 	}
 
-	// Try Streamable HTTP first.
-	if err := c.tryStreamableHTTP(ctx); err == nil {
-		log.Printf("mcp-plugin: server %s: Connect done (transport=StreamableHTTP)", c.cfg.Server)
-		return nil
-	} else {
-		log.Printf("mcp-plugin: server %s: Streamable HTTP failed (%v), trying SSE", c.cfg.Server, err)
+	// Try Streamable HTTP first, with one retry on transient errors (EOF,
+	// connection reset). Some wrappers like supergateway call res.end() twice,
+	// which corrupts the HTTP response on the first attempt.
+	var lastStreamableErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := c.tryStreamableHTTP(ctx); err == nil {
+			log.Printf("mcp-plugin: server %s: Connect done (transport=StreamableHTTP)", c.cfg.Server)
+			return nil
+		} else {
+			lastStreamableErr = err
+			if attempt == 1 && isTransientHTTPErr(err) {
+				log.Printf("mcp-plugin: server %s: Streamable HTTP transient error (%v), retrying once", c.cfg.Server, err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			log.Printf("mcp-plugin: server %s: Streamable HTTP failed (%v), trying SSE", c.cfg.Server, err)
+			break
+		}
 	}
 	if err := c.connectSSE(ctx); err != nil {
-		log.Printf("mcp-plugin: server %s: Connect failed: %v", c.cfg.Server, err)
+		log.Printf("mcp-plugin: server %s: Connect failed: SSE: %v; StreamableHTTP: %v", c.cfg.Server, err, lastStreamableErr)
 		return err
 	}
 	log.Printf("mcp-plugin: server %s: Connect done (transport=SSE)", c.cfg.Server)
@@ -221,6 +235,14 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 	return out, nil
 }
 
+// Close shuts down the transport (cancels SSE readLoop, etc.).
+// Safe to call on a nil or not-yet-connected client.
+func (c *Client) Close() {
+	if c.tp != nil {
+		c.tp.close()
+	}
+}
+
 // ServerName returns the configured server name.
 func (c *Client) ServerName() string { return c.cfg.Server }
 
@@ -240,6 +262,22 @@ func (c *Client) TransportContextErr() error {
 
 func (c *Client) nextID() int64 {
 	return c.idCounter.Add(1)
+}
+
+// isTransientHTTPErr returns true for errors that are likely caused by the
+// server closing the connection prematurely (EOF, connection reset) and may
+// succeed on a retry.
+func isTransientHTTPErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 // resolveEndpoint resolves endpoint (possibly relative) against sseURL.

@@ -518,6 +518,68 @@ func TestStreamableSSEFramed_AcceptHeader(t *testing.T) {
 	}
 }
 
+// --- Retry test: Streamable HTTP returns EOF on first attempt, succeeds on retry ---
+
+func TestStreamable_RetryOnEOF(t *testing.T) {
+	// Simulate supergateway's double-res.end() bug: first request gets
+	// connection closed (EOF), second request succeeds normally.
+	var attempt int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		attempt++
+		if attempt == 1 {
+			// Simulate EOF: hijack the connection and close it without sending a response.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("server does not support Hijack")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		// Normal response on retry.
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		resp := rpcResponse{JSONRPC: "2.0", ID: float64(*req.ID), Result: result}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(config.ServerConfig{Server: "retry-test", URL: srv.URL + "/mcp"})
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect should succeed after retry, got: %v", err)
+	}
+	if _, ok := c.tp.(*streamableHTTP); !ok {
+		t.Errorf("expected streamableHTTP transport after retry, got %T", c.tp)
+	}
+	if attempt < 2 {
+		t.Errorf("expected at least 2 attempts, got %d", attempt)
+	}
+}
+
 // --- Fallback test: Streamable HTTP fails (POST returns 404), falls back to SSE ---
 
 func TestFallback_StreamableToSSE(t *testing.T) {

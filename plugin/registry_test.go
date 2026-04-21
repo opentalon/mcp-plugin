@@ -207,6 +207,23 @@ func TestBuild_doesNotTrackOfflineWithCache(t *testing.T) {
 	}
 }
 
+// TestBuild_tracksOfflineServersWithCache verifies that a server which is
+// unreachable but HAS a cache is tracked in offlineServers for background reconnection.
+func TestBuild_tracksOfflineServersWithCache(t *testing.T) {
+	t.Setenv("OPENTALON_MCP_CACHE_DIR", t.TempDir())
+	cacheDir := config.CacheDir()
+	_ = saveCache(cacheDir, "cached-srv", []mcp.Tool{{Name: "my_tool", Description: "cached"}})
+
+	cfg := config.ServerConfig{Server: "cached-srv", URL: "http://127.0.0.1:0/sse"}
+	r, err := Build(context.Background(), []config.ServerConfig{cfg})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(r.offlineServers) != 1 || r.offlineServers[0].Server != "cached-srv" {
+		t.Errorf("offlineServers = %v, want [{cached-srv ...}]", r.offlineServers)
+	}
+}
+
 // TestStartBackgroundRetry_nopWhenEmpty verifies that StartBackgroundRetry
 // is a no-op (does not panic, starts no goroutine) when failedServers is empty.
 func TestStartBackgroundRetry_nopWhenEmpty(t *testing.T) {
