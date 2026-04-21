@@ -50,6 +50,7 @@ func (h *Handler) Configure(configJSON string) error {
 		return err
 	}
 	h.registry = registry
+	h.registry.StartBackgroundRetry(h.ctx)
 	log.Printf("mcp-plugin: init done (Configure): registry ready servers=%d actions=%d",
 		len(cfg.Servers), len(registry.actions))
 	return nil

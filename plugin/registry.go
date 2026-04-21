@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opentalon/mcp-plugin/config"
 	"github.com/opentalon/mcp-plugin/mcp"
@@ -27,9 +28,10 @@ type entry struct {
 
 // Registry holds all connected MCP clients and their tool mappings.
 type Registry struct {
-	mu      sync.RWMutex
-	actions map[string]entry // key: namespaced action name, e.g. "filesystem__read_file"
-	caps    pluginpkg.CapabilitiesMsg
+	mu            sync.RWMutex
+	actions       map[string]entry // key: namespaced action name, e.g. "filesystem__read_file"
+	caps          pluginpkg.CapabilitiesMsg
+	failedServers []config.ServerConfig // servers skipped during Build (no cache available)
 }
 
 // cachedServer is the on-disk format for one server's tool list.
@@ -64,6 +66,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			}
 			if len(tools) == 0 {
 				log.Printf("mcp-plugin: server %s: no cache available, skipping", cfg.Server)
+				r.failedServers = append(r.failedServers, cfg)
 				continue
 			}
 			log.Printf("mcp-plugin: server %s: using cached spec (%d tools)", cfg.Server, len(tools))
@@ -176,6 +179,64 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 		})
 	}
 	return params
+}
+
+// StartBackgroundRetry starts a goroutine that retries servers which were
+// completely absent from the registry (no cache available during Build).
+// On success it saves the cache and exits so the manager reloads the plugin
+// with full connectivity.
+func (r *Registry) StartBackgroundRetry(ctx context.Context) {
+	if len(r.failedServers) == 0 {
+		return
+	}
+	names := make([]string, len(r.failedServers))
+	for i, c := range r.failedServers {
+		names[i] = c.Server
+	}
+	log.Printf("mcp-plugin: background retry: will retry %d server(s) with no cache: %v", len(r.failedServers), names)
+	go r.retryLoop(ctx)
+}
+
+func (r *Registry) retryLoop(ctx context.Context) {
+	cacheDir := config.CacheDir()
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+	pending := make([]config.ServerConfig, len(r.failedServers))
+	copy(pending, r.failedServers)
+
+	for len(pending) > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		var stillFailing []config.ServerConfig
+		for _, cfg := range pending {
+			tools, _, err := fetchTools(ctx, cfg)
+			if err != nil {
+				log.Printf("mcp-plugin: background retry: server %q still unreachable: %v", cfg.Server, err)
+				stillFailing = append(stillFailing, cfg)
+				continue
+			}
+			log.Printf("mcp-plugin: background retry: server %q now reachable (%d tools), saving cache", cfg.Server, len(tools))
+			if cacheDir != "" {
+				if saveErr := saveCache(cacheDir, cfg.Server, tools); saveErr != nil {
+					log.Printf("mcp-plugin: background retry: save cache %q: %v", cfg.Server, saveErr)
+				}
+			}
+		}
+		pending = stillFailing
+
+		if len(pending) == 0 {
+			log.Printf("mcp-plugin: background retry: all missing servers now reachable; restarting plugin for clean init")
+			os.Exit(0)
+		}
+
+		if backoff < maxBackoff {
+			backoff *= 2
+		}
+	}
 }
 
 // reconnect creates a fresh client for the server in cfg and, on success,
