@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -123,7 +124,17 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	args := convertArgs(req.Args, e.schema)
 	log.Printf("mcp-plugin: Execute call_id=%s before CallTool server=%q tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
 
-	content, err := e.client.CallTool(e.mcpToolName, args)
+	// Build per-request credential headers for this server from WhoAmI.
+	var extraHeaders http.Header
+	if cred, ok := req.CredentialHeaders[e.cfg.Server]; ok && cred.Header != "" {
+		extraHeaders = http.Header{}
+		extraHeaders.Set(cred.Header, cred.Value)
+		log.Printf("mcp-plugin: Execute call_id=%s injecting credential header %q for server %q", req.ID, cred.Header, e.cfg.Server)
+	} else {
+		log.Printf("mcp-plugin: Execute call_id=%s no credential header for server %q (available: %v)", req.ID, e.cfg.Server, credKeys(req.CredentialHeaders))
+	}
+
+	content, err := e.client.CallTool(e.mcpToolName, args, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)
 		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", e.cfg.Server, e.mcpToolName, err)
@@ -170,4 +181,16 @@ func coerce(v, schemaType string) interface{} {
 		}
 	}
 	return v
+}
+
+// credKeys returns the map keys for log output.
+func credKeys(m map[string]pluginpkg.CredentialHeader) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

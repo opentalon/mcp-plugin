@@ -21,7 +21,7 @@ type sseTransport struct {
 	server     string // config server key; only for logs
 }
 
-func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResponse, error) {
+func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
 	if req.ID == nil {
 		return rpcResponse{}, fmt.Errorf("roundTrip requires a request ID")
 	}
@@ -31,7 +31,7 @@ func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResp
 	ch := s.conn.subscribe(id)
 	defer s.conn.unsubscribe(id)
 
-	if err := s.post(req); err != nil {
+	if err := s.post(req, extraHeaders); err != nil {
 		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d POST failed: %v", s.server, req.Method, id, err)
 		return rpcResponse{}, err
 	}
@@ -52,7 +52,7 @@ func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration) (rpcResp
 
 func (s *sseTransport) notify(req rpcRequest) error {
 	log.Printf("mcp-plugin: server %s: SSE → %s (notify, before POST)", s.server, req.Method)
-	err := s.post(req)
+	err := s.post(req, nil)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: SSE ← notify %s err: %v", s.server, req.Method, err)
 		return err
@@ -61,12 +61,13 @@ func (s *sseTransport) notify(req rpcRequest) error {
 	return nil
 }
 
-func (s *sseTransport) post(req rpcRequest) error {
+func (s *sseTransport) post(req rpcRequest, extraHeaders http.Header) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(s.conn.ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
+	ctx := contextWithExtraHeaders(s.conn.ctx, extraHeaders)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build POST: %w", err)
 	}

@@ -86,7 +86,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 		},
 	}
 
-	resp, err := st.roundTrip(initReq, 15*time.Second)
+	resp, err := st.roundTrip(initReq, 15*time.Second, nil)
 	if err != nil {
 		st.close()
 		return err
@@ -131,7 +131,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		},
 	}
 
-	resp, err := tp.roundTrip(initReq, 15*time.Second)
+	resp, err := tp.roundTrip(initReq, 15*time.Second, nil)
 	if err != nil {
 		tp.close()
 		return fmt.Errorf("server %s: initialize: %w", c.cfg.Server, err)
@@ -161,7 +161,7 @@ func (c *Client) ListTools() ([]Tool, error) {
 		Params:  map[string]interface{}{},
 	}
 
-	resp, err := c.tp.roundTrip(req, 30*time.Second)
+	resp, err := c.tp.roundTrip(req, 30*time.Second, nil)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d err: %v", c.cfg.Server, id, err)
 		return nil, err
@@ -180,7 +180,9 @@ func (c *Client) ListTools() ([]Tool, error) {
 }
 
 // CallTool invokes an MCP tool and returns the text content of the response.
-func (c *Client) CallTool(name string, args map[string]interface{}) (string, error) {
+// extraHeaders are per-request credential headers (from WhoAmI) that override
+// the client's static config headers. Pass nil when not needed.
+func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders http.Header) (string, error) {
 	id := c.nextID()
 	argKeys := make([]string, 0, len(args))
 	for k := range args {
@@ -200,7 +202,7 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 		},
 	}
 
-	resp, err := c.tp.roundTrip(req, 60*time.Second)
+	resp, err := c.tp.roundTrip(req, 60*time.Second, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d err: %v", c.cfg.Server, name, id, err)
 		return "", err
@@ -315,7 +317,21 @@ func resolveEndpoint(sseURL, endpoint string) string {
 	return base.ResolveReference(ep).String()
 }
 
+// extraHeadersKey is a context key for per-request credential headers.
+type extraHeadersKey struct{}
+
+// contextWithExtraHeaders returns a child context carrying per-request HTTP
+// headers. headerTransport applies these after static config headers so that
+// credential headers from WhoAmI take priority.
+func contextWithExtraHeaders(ctx context.Context, h http.Header) context.Context {
+	if len(h) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, extraHeadersKey{}, h)
+}
+
 // headerTransport injects fixed headers into every outbound request.
+// Per-request credential headers (carried via context) override static ones.
 type headerTransport struct {
 	base    http.RoundTripper
 	headers map[string]string
@@ -325,6 +341,14 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	for k, v := range t.headers {
 		clone.Header.Set(k, v)
+	}
+	// Per-request credential headers override static config headers.
+	if extra, ok := clone.Context().Value(extraHeadersKey{}).(http.Header); ok {
+		for k, vals := range extra {
+			for _, v := range vals {
+				clone.Header.Set(k, v)
+			}
+		}
 	}
 	return t.base.RoundTrip(clone)
 }
