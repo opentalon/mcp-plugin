@@ -49,6 +49,11 @@ func (h *Handler) Configure(configJSON string) error {
 		log.Printf("mcp-plugin: Configure Build err: %v", err)
 		return err
 	}
+	// Close old registry's connections before replacing (prevents goroutine
+	// leaks from stale SSE readLoops and "has no subscriber" log spam).
+	if h.registry != nil {
+		h.registry.Close()
+	}
 	h.registry = registry
 	h.registry.StartBackgroundRetry(h.ctx)
 	log.Printf("mcp-plugin: init done (Configure): registry ready servers=%d actions=%d",

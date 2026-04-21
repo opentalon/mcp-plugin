@@ -28,10 +28,11 @@ type entry struct {
 
 // Registry holds all connected MCP clients and their tool mappings.
 type Registry struct {
-	mu            sync.RWMutex
-	actions       map[string]entry // key: namespaced action name, e.g. "filesystem__read_file"
-	caps          pluginpkg.CapabilitiesMsg
-	failedServers []config.ServerConfig // servers skipped during Build (no cache available)
+	mu             sync.RWMutex
+	actions        map[string]entry // key: namespaced action name, e.g. "filesystem__read_file"
+	caps           pluginpkg.CapabilitiesMsg
+	failedServers  []config.ServerConfig // servers skipped during Build (no cache available)
+	offlineServers []config.ServerConfig // servers loaded from cache (client == nil)
 }
 
 // cachedServer is the on-disk format for one server's tool list.
@@ -70,6 +71,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				continue
 			}
 			log.Printf("mcp-plugin: server %s: using cached spec (%d tools)", cfg.Server, len(tools))
+			r.offlineServers = append(r.offlineServers, cfg)
 			client = nil // mark as offline
 		} else {
 			log.Printf("mcp-plugin: server %s: %d tools", cfg.Server, len(tools))
@@ -181,20 +183,28 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 	return params
 }
 
-// StartBackgroundRetry starts a goroutine that retries servers which were
-// completely absent from the registry (no cache available during Build).
-// On success it saves the cache and exits so the manager reloads the plugin
-// with full connectivity.
+// StartBackgroundRetry starts goroutines that:
+//  1. Retry servers with no cache (failedServers) — on success saves cache and
+//     exits so the manager reloads the plugin with full connectivity.
+//  2. Reconnect servers loaded from cache (offlineServers) — on success updates
+//     registry entries in-place so tools become live without a full restart.
 func (r *Registry) StartBackgroundRetry(ctx context.Context) {
-	if len(r.failedServers) == 0 {
-		return
+	if len(r.failedServers) > 0 {
+		names := make([]string, len(r.failedServers))
+		for i, c := range r.failedServers {
+			names[i] = c.Server
+		}
+		log.Printf("mcp-plugin: background retry: will retry %d server(s) with no cache: %v", len(r.failedServers), names)
+		go r.retryLoop(ctx)
 	}
-	names := make([]string, len(r.failedServers))
-	for i, c := range r.failedServers {
-		names[i] = c.Server
+	if len(r.offlineServers) > 0 {
+		names := make([]string, len(r.offlineServers))
+		for i, c := range r.offlineServers {
+			names[i] = c.Server
+		}
+		log.Printf("mcp-plugin: background retry: will reconnect %d cached-but-offline server(s): %v", len(r.offlineServers), names)
+		go r.reconnectOfflineLoop(ctx)
 	}
-	log.Printf("mcp-plugin: background retry: will retry %d server(s) with no cache: %v", len(r.failedServers), names)
-	go r.retryLoop(ctx)
 }
 
 func (r *Registry) retryLoop(ctx context.Context) {
@@ -239,6 +249,65 @@ func (r *Registry) retryLoop(ctx context.Context) {
 	}
 }
 
+// reconnectOfflineLoop proactively reconnects servers that loaded from cache
+// (client == nil). Unlike retryLoop it does NOT exit the process — it updates
+// entries in-place via reconnect, strips the [offline] prefix from descriptions,
+// and saves a fresh cache.
+func (r *Registry) reconnectOfflineLoop(ctx context.Context) {
+	cacheDir := config.CacheDir()
+	backoff := 5 * time.Second
+	const maxBackoff = 2 * time.Minute
+	pending := make([]config.ServerConfig, len(r.offlineServers))
+	copy(pending, r.offlineServers)
+
+	for len(pending) > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		var stillOffline []config.ServerConfig
+		for _, cfg := range pending {
+			client, err := r.reconnect(ctx, cfg)
+			if err != nil {
+				log.Printf("mcp-plugin: background reconnect: server %q still offline: %v", cfg.Server, err)
+				stillOffline = append(stillOffline, cfg)
+				continue
+			}
+			log.Printf("mcp-plugin: background reconnect: server %q now online", cfg.Server)
+
+			// Refresh the cache with live tools.
+			if cacheDir != "" {
+				tools, listErr := client.ListTools()
+				if listErr == nil {
+					if saveErr := saveCache(cacheDir, cfg.Server, tools); saveErr != nil {
+						log.Printf("mcp-plugin: background reconnect: save cache %q: %v", cfg.Server, saveErr)
+					}
+				}
+			}
+
+			// Strip [offline] prefix from capability descriptions.
+			r.mu.Lock()
+			for i, a := range r.caps.Actions {
+				if strings.HasPrefix(a.Name, cfg.Server+"__") {
+					r.caps.Actions[i].Description = strings.TrimPrefix(a.Description, "[offline] ")
+				}
+			}
+			r.mu.Unlock()
+		}
+		pending = stillOffline
+
+		if backoff < maxBackoff {
+			backoff = backoff * 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+	log.Printf("mcp-plugin: background reconnect: all cached-offline servers are now online")
+}
+
 // reconnect creates a fresh client for the server in cfg and, on success,
 // updates every action entry for that server so subsequent calls use the new connection.
 // It returns the new client so the caller can proceed immediately.
@@ -260,6 +329,20 @@ func (r *Registry) reconnect(ctx context.Context, cfg config.ServerConfig) (*mcp
 	r.mu.Unlock()
 	log.Printf("mcp-plugin: server %s: reconnected", cfg.Server)
 	return client, nil
+}
+
+// Close shuts down all live MCP client connections held by the registry.
+// It is safe to call multiple times.
+func (r *Registry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[*mcp.Client]bool)
+	for _, e := range r.actions {
+		if e.client != nil && !seen[e.client] {
+			seen[e.client] = true
+			e.client.Close()
+		}
+	}
 }
 
 func mapType(schemaType string) string {
