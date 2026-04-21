@@ -118,6 +118,16 @@ func fetchTools(ctx context.Context, cfg config.ServerConfig) ([]mcp.Tool, *mcp.
 	}
 	log.Printf("mcp-plugin: fetchTools server %q: Connect ok, ListTools (before)", cfg.Server)
 	tools, err := client.ListTools()
+	if err != nil && client.IsStreamableHTTP() {
+		// Server accepted StreamableHTTP initialize but failed on tools/list;
+		// it likely only supports SSE. Fall back and retry.
+		log.Printf("mcp-plugin: fetchTools server %q: ListTools err on StreamableHTTP (%v), falling back to SSE", cfg.Server, err)
+		if sseErr := client.FallbackSSE(ctx); sseErr != nil {
+			log.Printf("mcp-plugin: fetchTools server %q: SSE fallback err: %v", cfg.Server, sseErr)
+			return nil, nil, fmt.Errorf("list tools: %w (SSE fallback: %v)", err, sseErr)
+		}
+		tools, err = client.ListTools()
+	}
 	if err != nil {
 		log.Printf("mcp-plugin: fetchTools server %q: ListTools err: %v", cfg.Server, err)
 		return nil, nil, fmt.Errorf("list tools: %w", err)
