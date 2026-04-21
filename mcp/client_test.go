@@ -604,3 +604,86 @@ func TestFallback_StreamableToSSE(t *testing.T) {
 		t.Errorf("unexpected tools: %+v", tools)
 	}
 }
+
+// TestFallbackSSE_ListToolsFails tests that FallbackSSE works when StreamableHTTP
+// initialize succeeds but tools/list returns 503 (server only truly supports SSE).
+func TestFallbackSSE_ListToolsFails(t *testing.T) {
+	// Build a hybrid server: POST to /sse returns a valid StreamableHTTP
+	// initialize response but 503 for tools/list. GET to /sse and POST to
+	// /message implement the normal SSE protocol.
+	fs := &fakeMCPServer{eventsCh: make(chan string, 32)}
+	mux := http.NewServeMux()
+
+	// SSE GET handler (normal SSE protocol).
+	mux.HandleFunc("GET /sse", fs.sseHandler)
+
+	// POST /sse — respond to initialize (so StreamableHTTP auto-detect succeeds)
+	// but return 503 for anything else (e.g. tools/list).
+	mux.HandleFunc("POST /sse", func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			// notification (e.g. notifications/initialized) — accept
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if req.Method == "initialize" {
+			resp := rpcResponse{
+				JSONRPC: "2.0",
+				ID:      float64(*req.ID),
+				Result:  json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		// Everything else (tools/list, tools/call) → 503
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+	})
+
+	// POST /message — normal SSE message handler.
+	mux.HandleFunc("POST /message", fs.messageHandler(t))
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(config.ServerConfig{Server: "hybrid-test", URL: srv.URL + "/sse"})
+	ctx := testCtx(t)
+
+	// Connect should succeed via StreamableHTTP (initialize works).
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if !c.IsStreamableHTTP() {
+		t.Fatalf("expected StreamableHTTP after connect, got %T", c.tp)
+	}
+
+	// ListTools should fail (503).
+	_, err2 := c.ListTools()
+	if err2 == nil {
+		t.Fatal("expected ListTools to fail on StreamableHTTP, but it succeeded")
+	}
+	if !strings.Contains(err2.Error(), "503") {
+		t.Fatalf("expected 503 error, got: %v", err2)
+	}
+
+	// FallbackSSE should reconnect via SSE and work.
+	if err := c.FallbackSSE(ctx); err != nil {
+		t.Fatalf("FallbackSSE: %v", err)
+	}
+	if c.IsStreamableHTTP() {
+		t.Fatal("expected SSE transport after fallback, still StreamableHTTP")
+	}
+
+	// ListTools should now succeed via SSE.
+	tools2, err := c.ListTools()
+	if err != nil {
+		t.Fatalf("ListTools after SSE fallback: %v", err)
+	}
+	if len(tools2) != 1 || tools2[0].Name != "echo" {
+		t.Errorf("unexpected tools: %+v", tools2)
+	}
+}

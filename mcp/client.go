@@ -235,6 +235,28 @@ func (c *Client) CallTool(name string, args map[string]interface{}) (string, err
 	return out, nil
 }
 
+// IsStreamableHTTP reports whether the client is using the Streamable HTTP transport.
+func (c *Client) IsStreamableHTTP() bool {
+	_, ok := c.tp.(*streamableHTTP)
+	return ok
+}
+
+// FallbackSSE closes the current transport and re-connects using SSE.
+// This is useful when the server accepts a StreamableHTTP initialize but
+// fails on subsequent calls (e.g. tools/list returns 503) because it only
+// truly supports the SSE transport.
+func (c *Client) FallbackSSE(ctx context.Context) error {
+	log.Printf("mcp-plugin: server %s: StreamableHTTP→SSE fallback (closing old transport)", c.cfg.Server)
+	c.tp.close()
+	c.tp = nil
+	c.idCounter.Store(0)
+	if err := c.connectSSE(ctx); err != nil {
+		return err
+	}
+	log.Printf("mcp-plugin: server %s: Connect done (transport=SSE, fallback)", c.cfg.Server)
+	return nil
+}
+
 // Close shuts down the transport (cancels SSE readLoop, etc.).
 // Safe to call on a nil or not-yet-connected client.
 func (c *Client) Close() {
