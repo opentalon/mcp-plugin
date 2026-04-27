@@ -50,9 +50,20 @@ type initializeResult struct {
 
 // Tool is one MCP tool returned by tools/list.
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	InputSchema InputSchema `json:"inputSchema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  InputSchema     `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`  // optional JSON Schema for structured output
+	Annotations  *ToolAnnotation `json:"annotations,omitempty"`   // optional MCP tool annotations
+}
+
+// ToolAnnotation carries MCP tool metadata hints.
+type ToolAnnotation struct {
+	Title            string `json:"title,omitempty"`
+	ReadOnlyHint     *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint  *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint   *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint    *bool  `json:"openWorldHint,omitempty"`
 }
 
 // InputSchema is the JSON Schema for a tool's input parameters.
