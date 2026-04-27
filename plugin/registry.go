@@ -99,6 +99,11 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			if client == nil {
 				desc = "[offline] " + desc
 			}
+			// Append output schema to description so the LLM knows the
+			// expected return format for structured-output tools.
+			if len(tool.OutputSchema) > 0 {
+				desc += "\n\nOutput schema (return JSON matching this): " + string(tool.OutputSchema)
+			}
 			params := schemaToParams(tool.InputSchema)
 			r.caps.Actions = append(r.caps.Actions, pluginpkg.ActionMsg{
 				Name:        actionName,
