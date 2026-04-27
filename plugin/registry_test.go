@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,91 @@ func TestBuild_populatesRegistry(t *testing.T) {
 	}
 	if len(r.caps.Actions) != 1 {
 		t.Errorf("caps.Actions len = %d, want 1", len(r.caps.Actions))
+	}
+}
+
+// fakeMCPHTTPServerWithInstructions is a Streamable HTTP MCP server that
+// returns the supplied `instructions` text from initialize and exposes one
+// tool. Used to verify Build forwards instructions onto caps.SystemPromptAddition.
+func fakeMCPHTTPServerWithInstructions(t *testing.T, toolName, instructions string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			payload := map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]interface{}{},
+			}
+			if instructions != "" {
+				payload["instructions"] = instructions
+			}
+			b, _ := json.Marshal(payload)
+			result = b
+		case "tools/list":
+			result = json.RawMessage(fmt.Sprintf(`{"tools":[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]}`, toolName))
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuild_forwardsServerInstructionsToSystemPromptAddition(t *testing.T) {
+	const timlyProse = "Timly MCP server.\n\nA Place is a storage unit; an Org-unit is a structural unit."
+	const otherProse = "Other server prose."
+
+	timlySrv := fakeMCPHTTPServerWithInstructions(t, "list_items", timlyProse)
+	otherSrv := fakeMCPHTTPServerWithInstructions(t, "do_thing", otherProse)
+	ctx := testCtx(t)
+
+	r, err := Build(ctx, []config.ServerConfig{
+		{Server: "timly", URL: timlySrv.URL + "/mcp"},
+		{Server: "other", URL: otherSrv.URL + "/mcp"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	got := r.caps.SystemPromptAddition
+	for _, want := range []string{"## timly", timlyProse, "## other", otherProse} {
+		if !strings.Contains(got, want) {
+			t.Errorf("SystemPromptAddition missing %q\nfull text:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuild_emptySystemPromptAdditionWhenNoInstructions(t *testing.T) {
+	srv := fakeMCPHTTPServerWithInstructions(t, "do_thing", "") // no instructions
+	ctx := testCtx(t)
+
+	r, err := Build(ctx, []config.ServerConfig{{Server: "noprose", URL: srv.URL + "/mcp"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if r.caps.SystemPromptAddition != "" {
+		t.Errorf("SystemPromptAddition = %q, want empty", r.caps.SystemPromptAddition)
 	}
 }
 

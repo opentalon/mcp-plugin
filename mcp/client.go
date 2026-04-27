@@ -21,10 +21,11 @@ import (
 // It auto-detects the transport: tries Streamable HTTP first, then falls
 // back to the legacy HTTP+SSE transport.
 type Client struct {
-	cfg        config.ServerConfig
-	tp         transport
-	httpClient *http.Client
-	idCounter  atomic.Int64
+	cfg          config.ServerConfig
+	tp           transport
+	httpClient   *http.Client
+	idCounter    atomic.Int64
+	instructions string // server-provided initialize.instructions text (may be empty)
 }
 
 // NewClient creates a client for the given server config.
@@ -95,6 +96,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 		st.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
+	c.instructions = decodeInitInstructions(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -140,6 +142,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		tp.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
+	c.instructions = decodeInitInstructions(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -148,6 +151,28 @@ func (c *Client) connectSSE(ctx context.Context) error {
 	c.tp = tp
 	log.Printf("mcp-plugin: server %s: connected via SSE (after initialize + notifications/initialized)", c.cfg.Server)
 	return nil
+}
+
+// Instructions returns the server's `initialize.instructions` text, if any.
+// Empty string when the server didn't provide instructions or hasn't connected.
+func (c *Client) Instructions() string { return c.instructions }
+
+// decodeInitInstructions extracts `instructions` from an MCP initialize result
+// payload. Returns "" on decode failure or when the field is absent — the
+// field is optional per the spec, so this is not an error.
+func decodeInitInstructions(server string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var r initializeResult
+	if err := json.Unmarshal(raw, &r); err != nil {
+		log.Printf("mcp-plugin: server %s: initialize: decode instructions: %v", server, err)
+		return ""
+	}
+	if r.Instructions != "" {
+		log.Printf("mcp-plugin: server %s: initialize: captured %d bytes of instructions", server, len(r.Instructions))
+	}
+	return r.Instructions
 }
 
 // ListTools calls tools/list and returns the server's tool list.
