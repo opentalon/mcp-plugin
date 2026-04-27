@@ -12,3 +12,5 @@ require (
 	google.golang.org/grpc v1.69.4 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )
+
+replace github.com/opentalon/opentalon => github.com/mscdit/opentalon v0.0.0-20260427170144-4f9cd3402b93

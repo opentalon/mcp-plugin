@@ -94,13 +94,22 @@ func (fs *fakeMCPServer) respond(t *testing.T, req rpcRequest) {
 			Arguments map[string]interface{} `json:"arguments"`
 		}
 		_ = json.Unmarshal(b, &p)
-		if p.Name == "echo" {
+		switch p.Name {
+		case "echo":
 			text, _ := p.Arguments["text"].(string)
 			r, _ := json.Marshal(toolsCallResult{
 				Content: []Content{{Type: "text", Text: text}},
 			})
 			result = r
-		} else {
+		case "lookup":
+			// Mimics MCP servers that emit a one-line summary in `content`
+			// plus the schema-validated record in `structuredContent`.
+			r, _ := json.Marshal(toolsCallResult{
+				Content:           []Content{{Type: "text", Text: "Item activities: 1 total"}},
+				StructuredContent: json.RawMessage(`{"items":[{"id":42,"name":"widget"}]}`),
+			})
+			result = r
+		default:
 			r, _ := json.Marshal(toolsCallResult{
 				IsError: true,
 				Content: []Content{{Type: "text", Text: "unknown tool: " + p.Name}},
@@ -260,12 +269,62 @@ func TestClient_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"}, nil)
+	content, structured, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if got != "hello world" {
-		t.Errorf("content = %q, want %q", got, "hello world")
+	if content != "hello world" {
+		t.Errorf("content = %q, want %q", content, "hello world")
+	}
+	if structured != "" {
+		t.Errorf("structured should be empty for echo, got %q", structured)
+	}
+}
+
+// TestClient_CallTool_structuredContent verifies that a `structuredContent`
+// payload from the upstream MCP server is returned as a distinct second
+// channel — list/lookup tools whose actual data lives in the structured
+// channel must reach the host's pluginpkg.Response.StructuredContent field
+// without being squashed into the text content.
+func TestClient_CallTool_structuredContent(t *testing.T) {
+	srv := newFakeMCPServer(t)
+	c := NewClient(srv.cfg())
+	if err := c.Connect(testCtx(t)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	content, structured, err := c.CallTool("lookup", map[string]interface{}{}, nil)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if content != "Item activities: 1 total" {
+		t.Errorf("content = %q, want %q", content, "Item activities: 1 total")
+	}
+	if structured != `{"items":[{"id":42,"name":"widget"}]}` {
+		t.Errorf("structured = %q, want the lookup JSON payload", structured)
+	}
+}
+
+// TestStructuredPayload guards the absence-normalisation: an upstream
+// server that omits `structuredContent` or sends an explicit JSON `null`
+// must surface as an empty string to the host, so the optional-channel
+// semantics stay clean.
+func TestStructuredPayload(t *testing.T) {
+	cases := []struct {
+		name string
+		in   json.RawMessage
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty", json.RawMessage{}, ""},
+		{"jsonNull", json.RawMessage("null"), ""},
+		{"present", json.RawMessage(`{"a":1}`), `{"a":1}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := structuredPayload(tc.in); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -275,7 +334,7 @@ func TestClient_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
+	_, _, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -336,7 +395,7 @@ func TestClient_CallTool_extraHeaders(t *testing.T) {
 	extra.Set("X-Timly-User", "user-123")
 	extra.Set("X-Static", "from-whoami") // should override static
 
-	_, err := c.CallTool("echo", map[string]interface{}{"text": "hi"}, extra)
+	_, _, err := c.CallTool("echo", map[string]interface{}{"text": "hi"}, extra)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -397,7 +456,7 @@ func TestStreamable_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"}, nil)
+	got, _, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -412,7 +471,7 @@ func TestStreamable_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
+	_, _, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -552,7 +611,7 @@ func TestStreamableSSEFramed_CallTool(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"}, nil)
+	got, _, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}

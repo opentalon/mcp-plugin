@@ -117,9 +117,16 @@ type toolsCallParams struct {
 	Arguments map[string]interface{} `json:"arguments"`
 }
 
+// toolsCallResult mirrors the MCP tools/call response.  Servers MAY return
+// `structuredContent` (revision 2025-06+) alongside the textual content
+// blocks; the spec encourages clients to treat it as the source of truth
+// when present.  We keep it as raw JSON because the plugin host's
+// transport carries a single Content string — the structured payload is
+// appended verbatim in CallTool rather than reshaped here.
 type toolsCallResult struct {
-	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
+	Content           []Content       `json:"content"`
+	IsError           bool            `json:"isError,omitempty"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 }
 
 // Content is one item in a tools/call response.

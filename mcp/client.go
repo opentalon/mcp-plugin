@@ -204,10 +204,14 @@ func (c *Client) ListTools() ([]Tool, error) {
 	return result.Tools, nil
 }
 
-// CallTool invokes an MCP tool and returns the text content of the response.
-// extraHeaders are per-request credential headers (from WhoAmI) that override
-// the client's static config headers. Pass nil when not needed.
-func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders http.Header) (string, error) {
+// CallTool invokes an MCP tool and returns its content channels separately:
+// the joined textual content blocks, and the schema-validated JSON payload
+// (`structuredContent`, MCP spec revision 2025-06+) when the server emits one.
+// Empty `structured` means the upstream tool didn't produce a structured
+// payload.  extraHeaders are per-request credential headers (from WhoAmI)
+// that override the client's static config headers; pass nil when not
+// needed.
+func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders http.Header) (content, structured string, err error) {
 	id := c.nextID()
 	argKeys := make([]string, 0, len(args))
 	for k := range args {
@@ -230,16 +234,16 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 	resp, err := c.tp.roundTrip(req, 60*time.Second, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d err: %v", c.cfg.Server, name, id, err)
-		return "", err
+		return "", "", err
 	}
 	if resp.Error != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d rpc error: %s", c.cfg.Server, name, id, resp.Error.Message)
-		return "", fmt.Errorf("tools/call %s: %s", name, resp.Error.Message)
+		return "", "", fmt.Errorf("tools/call %s: %s", name, resp.Error.Message)
 	}
 	var result toolsCallResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d decode err: %v", c.cfg.Server, name, id, err)
-		return "", fmt.Errorf("decode tools/call: %w", err)
+		return "", "", fmt.Errorf("decode tools/call: %w", err)
 	}
 	if result.IsError {
 		var parts []string
@@ -249,7 +253,7 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 			}
 		}
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d tool error in body", c.cfg.Server, name, id)
-		return "", fmt.Errorf("tool %s error: %s", name, strings.Join(parts, "; "))
+		return "", "", fmt.Errorf("tool %s error: %s", name, strings.Join(parts, "; "))
 	}
 	var parts []string
 	for _, item := range result.Content {
@@ -257,9 +261,25 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 			parts = append(parts, item.Text)
 		}
 	}
-	out := strings.Join(parts, "\n")
-	log.Printf("mcp-plugin: server %s: CallTool ok tool=%q jsonrpc_id=%d content_len=%d", c.cfg.Server, name, id, len(out))
-	return out, nil
+	content = strings.Join(parts, "\n")
+	structured = structuredPayload(result.StructuredContent)
+	log.Printf("mcp-plugin: server %s: CallTool ok tool=%q jsonrpc_id=%d content_len=%d structured_len=%d",
+		c.cfg.Server, name, id, len(content), len(structured))
+	return content, structured, nil
+}
+
+// structuredPayload returns the upstream `structuredContent` field as a JSON
+// string for the host, normalising the MCP-spec absence cases (field missing
+// or explicit JSON `null`) to an empty string so the host's optional-channel
+// semantics stay clean.
+func structuredPayload(sc json.RawMessage) string {
+	if len(sc) == 0 {
+		return ""
+	}
+	if string(sc) == "null" {
+		return ""
+	}
+	return string(sc)
 }
 
 // IsStreamableHTTP reports whether the client is using the Streamable HTTP transport.
