@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opentalon/mcp-plugin/config"
 )
@@ -756,5 +757,75 @@ func TestFallbackSSE_ListToolsFails(t *testing.T) {
 	}
 	if len(tools2) != 1 || tools2[0].Name != "echo" {
 		t.Errorf("unexpected tools: %+v", tools2)
+	}
+}
+
+// initWithInstructionsServer is a minimal Streamable HTTP MCP server whose
+// initialize response includes an `instructions` field. Used to verify the
+// client captures it.
+func initWithInstructionsServer(t *testing.T, instructions string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			payload := map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]interface{}{},
+			}
+			if instructions != "" {
+				payload["instructions"] = instructions
+			}
+			b, _ := json.Marshal(payload)
+			result = b
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[]}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: float64(*req.ID), Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestClient_CapturesInitializeInstructions(t *testing.T) {
+	const prose = "Timly MCP server.\n\n## Org-units vs Containers\nA Place is a storage unit; an Org-unit is a structural unit."
+	srv := initWithInstructionsServer(t, prose)
+	c := NewClient(config.ServerConfig{Server: "timly", URL: srv.URL + "/mcp"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+	if got := c.Instructions(); got != prose {
+		t.Errorf("Instructions = %q, want %q", got, prose)
+	}
+}
+
+func TestClient_NoInstructionsField(t *testing.T) {
+	srv := initWithInstructionsServer(t, "")
+	c := NewClient(config.ServerConfig{Server: "noprose", URL: srv.URL + "/mcp"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+	if got := c.Instructions(); got != "" {
+		t.Errorf("Instructions = %q, want empty", got)
 	}
 }

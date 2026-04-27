@@ -57,6 +57,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 		},
 	}
 
+	var instructionSections []string
 	for _, cfg := range cfgs {
 		log.Printf("mcp-plugin: Build server %q url=%s (before fetchTools)", cfg.Server, cfg.URL)
 		tools, client, err := fetchTools(ctx, cfg)
@@ -79,6 +80,9 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				if saveErr := saveCache(cacheDir, cfg.Server, tools); saveErr != nil {
 					log.Printf("mcp-plugin: server %s: save cache: %v", cfg.Server, saveErr)
 				}
+			}
+			if instr := client.Instructions(); instr != "" {
+				instructionSections = append(instructionSections, "## "+cfg.Server+"\n"+instr)
 			}
 		}
 
@@ -104,7 +108,12 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 		}
 	}
 
-	log.Printf("mcp-plugin: Build done actions=%d", len(r.actions))
+	if len(instructionSections) > 0 {
+		r.caps.SystemPromptAddition = strings.Join(instructionSections, "\n\n")
+	}
+
+	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d",
+		len(r.actions), len(r.caps.SystemPromptAddition))
 	return r, nil
 }
 

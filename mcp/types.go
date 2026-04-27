@@ -37,6 +37,15 @@ type clientInfo struct {
 	Version string `json:"version"`
 }
 
+// initializeResult is the subset of the MCP initialize response we care about.
+// `instructions` is optional per the MCP spec — when set, the server provides
+// orientation prose meant for the client/LLM as system-level guidance.
+// Other fields (protocolVersion, capabilities, serverInfo) are intentionally
+// omitted; we don't currently read them.
+type initializeResult struct {
+	Instructions string `json:"instructions"`
+}
+
 // Tool from tools/list.
 
 // Tool is one MCP tool returned by tools/list.
