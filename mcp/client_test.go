@@ -260,7 +260,7 @@ func TestClient_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"}, nil)
+	got, _, err := c.CallTool("echo", map[string]interface{}{"text": "hello world"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestClient_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
+	_, _, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -336,7 +336,7 @@ func TestClient_CallTool_extraHeaders(t *testing.T) {
 	extra.Set("X-Timly-User", "user-123")
 	extra.Set("X-Static", "from-whoami") // should override static
 
-	_, err := c.CallTool("echo", map[string]interface{}{"text": "hi"}, extra)
+	_, _, err := c.CallTool("echo", map[string]interface{}{"text": "hi"}, extra)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestStreamable_CallTool_success(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"}, nil)
+	got, _, err := c.CallTool("echo", map[string]interface{}{"text": "streamable hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestStreamable_CallTool_toolError(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	_, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
+	_, _, err := c.CallTool("unknown-tool", map[string]interface{}{}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -552,7 +552,7 @@ func TestStreamableSSEFramed_CallTool(t *testing.T) {
 	if err := c.Connect(testCtx(t)); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	got, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"}, nil)
+	got, _, err := c.CallTool("echo", map[string]interface{}{"text": "fastmcp hello"}, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}

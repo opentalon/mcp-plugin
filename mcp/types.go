@@ -129,8 +129,9 @@ type toolsCallParams struct {
 }
 
 type toolsCallResult struct {
-	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
+	Content           []Content       `json:"content"`
+	IsError           bool            `json:"isError,omitempty"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"` // MCP revision 2025-06+: schema-validated JSON payload
 }
 
 // Content is one item in a tools/call response.
