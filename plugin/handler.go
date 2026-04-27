@@ -134,14 +134,14 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		log.Printf("mcp-plugin: Execute call_id=%s no credential header for server %q (available: %v)", req.ID, e.cfg.Server, credKeys(req.CredentialHeaders))
 	}
 
-	content, err := e.client.CallTool(e.mcpToolName, args, extraHeaders)
+	content, structured, err := e.client.CallTool(e.mcpToolName, args, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)
 		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", e.cfg.Server, e.mcpToolName, err)
 		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
 	}
-	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d", req.ID, len(content))
-	return pluginpkg.Response{CallID: req.ID, Content: content}
+	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d structured_len=%d", req.ID, len(content), len(structured))
+	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
 }
 
 // convertArgs converts map[string]string args to map[string]interface{},
