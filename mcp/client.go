@@ -17,6 +17,13 @@ import (
 	"github.com/opentalon/mcp-plugin/config"
 )
 
+// protocolVersion is the MCP protocol revision advertised on initialize. We
+// negotiate against `2025-03-26` (the first revision that allows servers to
+// return `instructions`); on `2024-11-05` the spec — and the Ruby `mcp` gem
+// at server side — explicitly strip `instructions` from the initialize
+// response, leaving downstream RAG / system-prompt enrichment empty.
+const protocolVersion = "2025-03-26"
+
 // Client connects to one MCP server and exposes ListTools / CallTool.
 // It auto-detects the transport: tries Streamable HTTP first, then falls
 // back to the legacy HTTP+SSE transport.
@@ -81,7 +88,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 		ID:      &id,
 		Method:  "initialize",
 		Params: initializeParams{
-			ProtocolVersion: "2024-11-05",
+			ProtocolVersion: protocolVersion,
 			Capabilities:    map[string]interface{}{},
 			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
 		},
@@ -127,7 +134,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		ID:      &id,
 		Method:  "initialize",
 		Params: initializeParams{
-			ProtocolVersion: "2024-11-05",
+			ProtocolVersion: protocolVersion,
 			Capabilities:    map[string]interface{}{},
 			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
 		},
