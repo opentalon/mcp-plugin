@@ -40,10 +40,23 @@ type clientInfo struct {
 // initializeResult is the subset of the MCP initialize response we care about.
 // `instructions` is optional per the MCP spec — when set, the server provides
 // orientation prose meant for the client/LLM as system-level guidance.
+// `glossary` is a custom extension — MCP servers can provide domain-specific
+// term/definition pairs that the orchestrator syncs to the vector store for
+// automatic context injection.
 // Other fields (protocolVersion, capabilities, serverInfo) are intentionally
 // omitted; we don't currently read them.
 type initializeResult struct {
-	Instructions string `json:"instructions"`
+	Instructions string               `json:"instructions"`
+	Glossary     []InitGlossaryEntry  `json:"glossary,omitempty"`
+}
+
+// InitGlossaryEntry is a term/definition pair from an MCP server's initialize response.
+type InitGlossaryEntry struct {
+	Term       string   `json:"term"`
+	Definition string   `json:"definition"`
+	Category   string   `json:"category,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Synonyms   []string `json:"synonyms,omitempty"`
 }
 
 // Tool from tools/list.
