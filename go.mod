@@ -2,7 +2,7 @@ module github.com/opentalon/mcp-plugin
 
 go 1.25
 
-require github.com/opentalon/opentalon v0.0.10
+require github.com/opentalon/opentalon v0.0.11
 
 require (
 	golang.org/x/net v0.48.0 // indirect
@@ -12,5 +12,3 @@ require (
 	google.golang.org/grpc v1.69.4 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )
-
-replace github.com/opentalon/opentalon => ../opentalon
