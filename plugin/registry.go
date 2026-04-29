@@ -84,6 +84,18 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			if instr := client.Instructions(); instr != "" {
 				instructionSections = append(instructionSections, "## "+cfg.Server+"\n"+instr)
 			}
+			for _, g := range client.Glossary() {
+				if g.Term == "" || g.Definition == "" {
+					continue
+				}
+				r.caps.Glossary = append(r.caps.Glossary, pluginpkg.GlossaryEntryMsg{
+					Term:       g.Term,
+					Definition: g.Definition,
+					Category:   g.Category,
+					Tags:       g.Tags,
+					Synonyms:   g.Synonyms,
+				})
+			}
 		}
 
 		for _, tool := range tools {
@@ -117,8 +129,8 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 		r.caps.SystemPromptAddition = strings.Join(instructionSections, "\n\n")
 	}
 
-	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d",
-		len(r.actions), len(r.caps.SystemPromptAddition))
+	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d glossary_entries=%d",
+		len(r.actions), len(r.caps.SystemPromptAddition), len(r.caps.Glossary))
 	return r, nil
 }
 

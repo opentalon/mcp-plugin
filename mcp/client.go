@@ -32,7 +32,8 @@ type Client struct {
 	tp           transport
 	httpClient   *http.Client
 	idCounter    atomic.Int64
-	instructions string // server-provided initialize.instructions text (may be empty)
+	instructions string              // server-provided initialize.instructions text (may be empty)
+	glossary     []InitGlossaryEntry // server-provided glossary entries (may be empty)
 }
 
 // NewClient creates a client for the given server config.
@@ -103,7 +104,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 		st.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
-	c.instructions = decodeInitInstructions(c.cfg.Server, resp.Result)
+	c.instructions, c.glossary = decodeInitResult(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -149,7 +150,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		tp.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
-	c.instructions = decodeInitInstructions(c.cfg.Server, resp.Result)
+	c.instructions, c.glossary = decodeInitResult(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -164,22 +165,28 @@ func (c *Client) connectSSE(ctx context.Context) error {
 // Empty string when the server didn't provide instructions or hasn't connected.
 func (c *Client) Instructions() string { return c.instructions }
 
-// decodeInitInstructions extracts `instructions` from an MCP initialize result
-// payload. Returns "" on decode failure or when the field is absent — the
-// field is optional per the spec, so this is not an error.
-func decodeInitInstructions(server string, raw json.RawMessage) string {
+// Glossary returns the server's glossary entries from the initialize response.
+// Empty slice when the server didn't provide a glossary or hasn't connected.
+func (c *Client) Glossary() []InitGlossaryEntry { return c.glossary }
+
+// decodeInitResult extracts `instructions` and `glossary` from an MCP
+// initialize result payload. Both are optional per the spec.
+func decodeInitResult(server string, raw json.RawMessage) (string, []InitGlossaryEntry) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
 	var r initializeResult
 	if err := json.Unmarshal(raw, &r); err != nil {
-		log.Printf("mcp-plugin: server %s: initialize: decode instructions: %v", server, err)
-		return ""
+		log.Printf("mcp-plugin: server %s: initialize: decode: %v", server, err)
+		return "", nil
 	}
 	if r.Instructions != "" {
 		log.Printf("mcp-plugin: server %s: initialize: captured %d bytes of instructions", server, len(r.Instructions))
 	}
-	return r.Instructions
+	if len(r.Glossary) > 0 {
+		log.Printf("mcp-plugin: server %s: initialize: captured %d glossary entries", server, len(r.Glossary))
+	}
+	return r.Instructions, r.Glossary
 }
 
 // ListTools calls tools/list and returns the server's tool list.
