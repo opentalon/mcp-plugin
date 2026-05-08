@@ -103,7 +103,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 	}
 	if resp.Error != nil {
 		st.close()
-		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
+		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error)
 	}
 	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
 
@@ -149,7 +149,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 	}
 	if resp.Error != nil {
 		tp.close()
-		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
+		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error)
 	}
 	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
 
@@ -215,8 +215,8 @@ func (c *Client) ListTools() ([]Tool, error) {
 		return nil, err
 	}
 	if resp.Error != nil {
-		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d rpc error: %s", c.cfg.Server, id, resp.Error.Message)
-		return nil, fmt.Errorf("tools/list: %s", resp.Error.Message)
+		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d rpc error: %s", c.cfg.Server, id, resp.Error)
+		return nil, fmt.Errorf("tools/list: %s", resp.Error)
 	}
 	var result toolsListResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
@@ -257,8 +257,8 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 		return "", "", err
 	}
 	if resp.Error != nil {
-		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d rpc error: %s", c.cfg.Server, name, id, resp.Error.Message)
-		return "", "", fmt.Errorf("tools/call %s: %s", name, resp.Error.Message)
+		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d rpc error: %s", c.cfg.Server, name, id, resp.Error)
+		return "", "", fmt.Errorf("tools/call %s: %s", name, resp.Error)
 	}
 	var result toolsCallResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
