@@ -238,8 +238,12 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 		argKeys = append(argKeys, k)
 	}
 	sort.Strings(argKeys)
-	log.Printf("mcp-plugin: server %s: CallTool begin tool=%q jsonrpc_id=%d arg_count=%d arg_keys=%v",
-		c.cfg.Server, name, id, len(args), argKeys)
+	argDetails := make([]string, 0, len(args))
+	for _, k := range argKeys {
+		argDetails = append(argDetails, fmt.Sprintf("%s=%v(%T)", k, args[k], args[k]))
+	}
+	log.Printf("mcp-plugin: server %s: CallTool begin tool=%q jsonrpc_id=%d arg_count=%d args=[%s]",
+		c.cfg.Server, name, id, len(args), strings.Join(argDetails, ", "))
 
 	req := rpcRequest{
 		JSONRPC: "2.0",
@@ -249,6 +253,10 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 			Name:      name,
 			Arguments: args,
 		},
+	}
+
+	if reqBody, jsonErr := json.Marshal(req); jsonErr == nil {
+		log.Printf("mcp-plugin: server %s: CallTool jsonrpc_id=%d request_body=%s", c.cfg.Server, id, string(reqBody))
 	}
 
 	resp, err := c.tp.roundTrip(req, 60*time.Second, extraHeaders)
