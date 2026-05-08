@@ -20,8 +20,35 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	// Data carries the server-provided detail behind a generic Message. The
+	// JSON-RPC 2.0 spec keeps the top-level Message short and stable (e.g.
+	// "Invalid params") and puts the actual reason ("Missing required
+	// arguments: item_id", a validation error string, …) here. Without
+	// surfacing Data, every "Invalid params" / "Internal error" looks
+	// identical in the orchestrator log — and the diagnostic signal lives
+	// here. Forwarded raw so a server emitting a JSON object stays
+	// inspectable.
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// String renders an rpcError for logging / wrapping. Includes Data when the
+// server provided one, otherwise just the generic Message.
+func (e rpcError) String() string {
+	if len(e.Data) == 0 {
+		return e.Message
+	}
+	// Strip surrounding quotes when Data is a JSON string so the rendered
+	// form reads naturally ("Invalid params: Missing required arguments:
+	// item_id") instead of escape-quoted.
+	if len(e.Data) > 1 && e.Data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(e.Data, &s); err == nil {
+			return e.Message + ": " + s
+		}
+	}
+	return e.Message + ": " + string(e.Data)
 }
 
 // MCP initialize params.
