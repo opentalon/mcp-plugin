@@ -198,6 +198,104 @@ func TestBuild_emptySystemPromptAdditionWhenNoInstructions(t *testing.T) {
 	}
 }
 
+// fakeMCPHTTPServerWithKnowledgeArticles is a Streamable HTTP MCP server that
+// returns the supplied knowledge_articles[] from initialize and exposes one tool.
+func fakeMCPHTTPServerWithKnowledgeArticles(t *testing.T, toolName string, articles []map[string]interface{}) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			payload := map[string]interface{}{
+				"protocolVersion":    "2024-11-05",
+				"capabilities":       map[string]interface{}{},
+				"knowledge_articles": articles,
+			}
+			b, _ := json.Marshal(payload)
+			result = b
+		case "tools/list":
+			result = json.RawMessage(fmt.Sprintf(`{"tools":[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]}`, toolName))
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuild_forwardsKnowledgeArticlesWithServerPrefixedIDs(t *testing.T) {
+	articles := []map[string]interface{}{
+		{"id": "org-units-vs-containers", "title": "Org-units vs Containers (Places)", "content": "A Place is a storage unit; an Org-unit is a structural unit.", "tags": []string{"places"}},
+		{"id": "users-vs-persons", "title": "Users vs Persons", "content": "A User logs in; a Person is a managed record."},
+		{"id": "incomplete", "title": "", "content": "x"}, // dropped — missing title
+	}
+	srv := fakeMCPHTTPServerWithKnowledgeArticles(t, "list_items", articles)
+	ctx := testCtx(t)
+
+	r, err := Build(ctx, []config.ServerConfig{{Server: "timly", URL: srv.URL + "/mcp"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if len(r.caps.KnowledgeArticles) != 2 {
+		t.Fatalf("KnowledgeArticles len = %d, want 2 (incomplete must be filtered): %#v", len(r.caps.KnowledgeArticles), r.caps.KnowledgeArticles)
+	}
+	// IDs are namespaced by MCP server name to keep them unique across bridged servers.
+	wantIDs := map[string]string{
+		"timly__org-units-vs-containers": "Org-units vs Containers (Places)",
+		"timly__users-vs-persons":        "Users vs Persons",
+	}
+	for _, ka := range r.caps.KnowledgeArticles {
+		title, ok := wantIDs[ka.ID]
+		if !ok {
+			t.Errorf("unexpected article ID %q", ka.ID)
+			continue
+		}
+		if ka.Title != title {
+			t.Errorf("article %s: title = %q, want %q", ka.ID, ka.Title, title)
+		}
+		delete(wantIDs, ka.ID)
+	}
+	for missing := range wantIDs {
+		t.Errorf("expected article %q not forwarded", missing)
+	}
+}
+
+func TestBuild_noKnowledgeArticlesWhenServerOmits(t *testing.T) {
+	// Backward-compat: a server that doesn't ship knowledge_articles must not
+	// cause empty entries on caps.KnowledgeArticles.
+	srv := fakeMCPHTTPServerWithInstructions(t, "do_thing", "Some prose.")
+	ctx := testCtx(t)
+
+	r, err := Build(ctx, []config.ServerConfig{{Server: "legacy", URL: srv.URL + "/mcp"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(r.caps.KnowledgeArticles) != 0 {
+		t.Errorf("KnowledgeArticles len = %d, want 0", len(r.caps.KnowledgeArticles))
+	}
+}
+
 func TestBuild_usesServerKeyInActionName(t *testing.T) {
 	// Verifies that the action name is "<server>__<tool>", not "<name>__<tool>".
 	// This guards against the mcp_inject bug where "name" was used instead of "server".

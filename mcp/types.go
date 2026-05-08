@@ -40,14 +40,17 @@ type clientInfo struct {
 // initializeResult is the subset of the MCP initialize response we care about.
 // `instructions` is optional per the MCP spec — when set, the server provides
 // orientation prose meant for the client/LLM as system-level guidance.
-// `glossary` is a custom extension — MCP servers can provide domain-specific
-// term/definition pairs that the orchestrator syncs to the vector store for
-// automatic context injection.
+// `glossary` and `knowledge_articles` are custom extensions — MCP servers can
+// provide domain-specific term/definition pairs (synced to the vector store
+// for context injection) and per-section reference articles (retrieved via
+// the prepare-path RAG into [knowledge_context] only when relevant), keeping
+// the server prompt small.
 // Other fields (protocolVersion, capabilities, serverInfo) are intentionally
 // omitted; we don't currently read them.
 type initializeResult struct {
-	Instructions string               `json:"instructions"`
-	Glossary     []InitGlossaryEntry  `json:"glossary,omitempty"`
+	Instructions      string                  `json:"instructions"`
+	Glossary          []InitGlossaryEntry     `json:"glossary,omitempty"`
+	KnowledgeArticles []InitKnowledgeArticle  `json:"knowledge_articles,omitempty"`
 }
 
 // InitGlossaryEntry is a term/definition pair from an MCP server's initialize response.
@@ -57,6 +60,17 @@ type InitGlossaryEntry struct {
 	Category   string   `json:"category,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	Synonyms   []string `json:"synonyms,omitempty"`
+}
+
+// InitKnowledgeArticle is one self-contained reference section provided by an
+// MCP server's initialize response. Bridges to the orchestrator's per-section
+// RAG so that long server prose can be split out of the always-on system
+// prompt and pulled in selectively per query.
+type InitKnowledgeArticle struct {
+	ID      string   `json:"id"`
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags,omitempty"`
 }
 
 // Tool from tools/list.
