@@ -8,9 +8,10 @@ import (
 
 func TestSchemaProp_UnmarshalJSON(t *testing.T) {
 	cases := []struct {
-		name     string
-		input    string
-		wantType string
+		name         string
+		input        string
+		wantType     string
+		wantNullable bool
 	}{
 		{
 			name:     "string type",
@@ -18,19 +19,22 @@ func TestSchemaProp_UnmarshalJSON(t *testing.T) {
 			wantType: "string",
 		},
 		{
-			name:     "array type picks first non-null",
-			input:    `{"type":["string","null"]}`,
-			wantType: "string",
+			name:         "array type picks first non-null",
+			input:        `{"type":["string","null"]}`,
+			wantType:     "string",
+			wantNullable: true,
 		},
 		{
-			name:     "array type null first picks second",
-			input:    `{"type":["null","integer"]}`,
-			wantType: "integer",
+			name:         "array type null first picks second",
+			input:        `{"type":["null","integer"]}`,
+			wantType:     "integer",
+			wantNullable: true,
 		},
 		{
-			name:     "array type all null picks first",
-			input:    `{"type":["null","null"]}`,
-			wantType: "null",
+			name:         "array type all null picks first",
+			input:        `{"type":["null","null"]}`,
+			wantType:     "null",
+			wantNullable: true,
 		},
 		{
 			name:     "missing type",
@@ -46,6 +50,9 @@ func TestSchemaProp_UnmarshalJSON(t *testing.T) {
 			}
 			if prop.Type != tc.wantType {
 				t.Errorf("Type = %q, want %q", prop.Type, tc.wantType)
+			}
+			if prop.Nullable != tc.wantNullable {
+				t.Errorf("Nullable = %v, want %v", prop.Nullable, tc.wantNullable)
 			}
 		})
 	}

@@ -168,13 +168,18 @@ func convertArgs(args map[string]string, schema mcp.InputSchema) map[string]inte
 			result[k] = v
 			continue
 		}
-		result[k] = coerce(v, prop.Type)
+		result[k] = coerce(v, prop.Type, prop.Nullable)
 	}
 	return result
 }
 
 // coerce converts a string value to the appropriate Go type for an MCP argument.
-func coerce(v, schemaType string) interface{} {
+// When nullable is true and v is the literal "null", nil is returned so the
+// JSON-RPC call sends a real JSON null rather than the string "null".
+func coerce(v, schemaType string, nullable bool) interface{} {
+	if nullable && v == "null" {
+		return nil
+	}
 	switch strings.ToLower(schemaType) {
 	case "number":
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
