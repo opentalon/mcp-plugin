@@ -91,9 +91,13 @@ func TestRpcError_String(t *testing.T) {
 			// (`resp.Error` on rpcResponse is a pointer). Auto-deref must
 			// pick up the value-receiver String — guard against accidental
 			// future move to pointer-receiver only that would silently
-			// regress the Sprintf path used in client.go's error wrapping.
+			// regress the %s path used in client.go's error wrapping.
+			// Deliberately Sprintf here (not .String()): we are testing the
+			// Stringer-via-fmt path that the actual fmt.Errorf call sites
+			// take. Calling .String() directly would not catch a regression
+			// where the receiver type changes and auto-deref no longer fires.
 			ptr := &e
-			if got := fmt.Sprintf("%s", ptr); got != tc.want {
+			if got := fmt.Sprintf("%s", ptr); got != tc.want { //nolint:staticcheck // S1025 — testing fmt-Stringer path on purpose, see comment above
 				t.Errorf("Sprintf via *rpcError = %q, want %q", got, tc.want)
 			}
 		})
