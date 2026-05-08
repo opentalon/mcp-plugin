@@ -28,12 +28,13 @@ const protocolVersion = "2025-03-26"
 // It auto-detects the transport: tries Streamable HTTP first, then falls
 // back to the legacy HTTP+SSE transport.
 type Client struct {
-	cfg          config.ServerConfig
-	tp           transport
-	httpClient   *http.Client
-	idCounter    atomic.Int64
-	instructions string              // server-provided initialize.instructions text (may be empty)
-	glossary     []InitGlossaryEntry // server-provided glossary entries (may be empty)
+	cfg               config.ServerConfig
+	tp                transport
+	httpClient        *http.Client
+	idCounter         atomic.Int64
+	instructions      string                 // server-provided initialize.instructions text (may be empty)
+	glossary          []InitGlossaryEntry    // server-provided glossary entries (may be empty)
+	knowledgeArticles []InitKnowledgeArticle // server-provided per-section knowledge articles (may be empty)
 }
 
 // NewClient creates a client for the given server config.
@@ -104,7 +105,7 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 		st.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
-	c.instructions, c.glossary = decodeInitResult(c.cfg.Server, resp.Result)
+	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -150,7 +151,7 @@ func (c *Client) connectSSE(ctx context.Context) error {
 		tp.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error.Message)
 	}
-	c.instructions, c.glossary = decodeInitResult(c.cfg.Server, resp.Result)
+	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
 
 	// Send notifications/initialized (fire-and-forget).
 	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -169,16 +170,21 @@ func (c *Client) Instructions() string { return c.instructions }
 // Empty slice when the server didn't provide a glossary or hasn't connected.
 func (c *Client) Glossary() []InitGlossaryEntry { return c.glossary }
 
-// decodeInitResult extracts `instructions` and `glossary` from an MCP
-// initialize result payload. Both are optional per the spec.
-func decodeInitResult(server string, raw json.RawMessage) (string, []InitGlossaryEntry) {
+// KnowledgeArticles returns the server's per-section knowledge articles from
+// the initialize response. Empty slice when the server didn't provide any or
+// hasn't connected.
+func (c *Client) KnowledgeArticles() []InitKnowledgeArticle { return c.knowledgeArticles }
+
+// decodeInitResult extracts `instructions`, `glossary` and `knowledge_articles`
+// from an MCP initialize result payload. All are optional.
+func decodeInitResult(server string, raw json.RawMessage) (string, []InitGlossaryEntry, []InitKnowledgeArticle) {
 	if len(raw) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	var r initializeResult
 	if err := json.Unmarshal(raw, &r); err != nil {
 		log.Printf("mcp-plugin: server %s: initialize: decode: %v", server, err)
-		return "", nil
+		return "", nil, nil
 	}
 	if r.Instructions != "" {
 		log.Printf("mcp-plugin: server %s: initialize: captured %d bytes of instructions", server, len(r.Instructions))
@@ -186,7 +192,10 @@ func decodeInitResult(server string, raw json.RawMessage) (string, []InitGlossar
 	if len(r.Glossary) > 0 {
 		log.Printf("mcp-plugin: server %s: initialize: captured %d glossary entries", server, len(r.Glossary))
 	}
-	return r.Instructions, r.Glossary
+	if len(r.KnowledgeArticles) > 0 {
+		log.Printf("mcp-plugin: server %s: initialize: captured %d knowledge articles", server, len(r.KnowledgeArticles))
+	}
+	return r.Instructions, r.Glossary, r.KnowledgeArticles
 }
 
 // ListTools calls tools/list and returns the server's tool list.

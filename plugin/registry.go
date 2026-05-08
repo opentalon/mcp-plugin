@@ -96,6 +96,26 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 					Synonyms:   g.Synonyms,
 				})
 			}
+			// Forward per-section knowledge articles to the orchestrator. Each
+			// becomes a "mcp-knowledge:<plugin>:<id>" record on the vector store
+			// (see weaviate-plugin sync_actions handling) so the prepare-path
+			// RAG can pull just the relevant section into [knowledge_context]
+			// instead of the full server prose ending up in every system prompt.
+			//
+			// Article IDs are namespaced by MCP server name to keep IDs unique
+			// across multiple bridged servers — same scheme this plugin already
+			// applies to action names ("<server>__<tool>").
+			for _, ka := range client.KnowledgeArticles() {
+				if ka.ID == "" || ka.Title == "" || ka.Content == "" {
+					continue
+				}
+				r.caps.KnowledgeArticles = append(r.caps.KnowledgeArticles, pluginpkg.KnowledgeArticleMsg{
+					ID:      cfg.Server + "__" + ka.ID,
+					Title:   ka.Title,
+					Content: ka.Content,
+					Tags:    ka.Tags,
+				})
+			}
 		}
 
 		for _, tool := range tools {
@@ -129,8 +149,8 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 		r.caps.SystemPromptAddition = strings.Join(instructionSections, "\n\n")
 	}
 
-	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d glossary_entries=%d",
-		len(r.actions), len(r.caps.SystemPromptAddition), len(r.caps.Glossary))
+	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d glossary_entries=%d knowledge_articles=%d",
+		len(r.actions), len(r.caps.SystemPromptAddition), len(r.caps.Glossary), len(r.caps.KnowledgeArticles))
 	return r, nil
 }
 
