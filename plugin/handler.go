@@ -197,6 +197,11 @@ func sanitizeIncludeFields(args map[string]interface{}, schema mcp.InputSchema) 
 	if !ok {
 		return
 	}
+	// Strip nil/null values — the MCP server rejects null for array fields.
+	if raw == nil {
+		delete(args, "include_fields")
+		return
+	}
 	arr, ok := raw.([]interface{})
 	if !ok {
 		return
