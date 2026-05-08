@@ -130,6 +130,7 @@ type InputSchema struct {
 // SchemaProp describes one property in an InputSchema.
 type SchemaProp struct {
 	Type        string `json:"type"`
+	Nullable    bool   `json:"-"` // true when JSON Schema type includes "null"
 	Description string `json:"description,omitempty"`
 }
 
@@ -158,6 +159,11 @@ func (s *SchemaProp) UnmarshalJSON(data []byte) error {
 	var types []string
 	if err := json.Unmarshal(alias.Type, &types); err != nil {
 		return err
+	}
+	for _, t := range types {
+		if t == "null" {
+			s.Nullable = true
+		}
 	}
 	for _, t := range types {
 		if t != "null" {

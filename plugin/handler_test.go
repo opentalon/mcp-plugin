@@ -65,28 +65,38 @@ func TestSchemaToParams(t *testing.T) {
 
 func TestCoerce(t *testing.T) {
 	cases := []struct {
-		v, typ string
-		want   interface{}
+		v        string
+		typ      string
+		nullable bool
+		want     interface{}
 	}{
-		{"3.14", "number", float64(3.14)},
-		{"not-a-number", "number", "not-a-number"},
-		{"7", "integer", int64(7)},
-		{"not-int", "integer", "not-int"},
-		{"true", "boolean", true},
-		{"false", "boolean", false},
-		{"bad", "boolean", "bad"},
-		{`{"k":"v"}`, "object", map[string]interface{}{"k": "v"}},
-		{"bad-json", "object", "bad-json"},
-		{`[1,2]`, "array", []interface{}{float64(1), float64(2)}},
-		{"hello", "string", "hello"},
-		{"hello", "", "hello"},
+		{"3.14", "number", false, float64(3.14)},
+		{"not-a-number", "number", false, "not-a-number"},
+		{"7", "integer", false, int64(7)},
+		{"not-int", "integer", false, "not-int"},
+		{"true", "boolean", false, true},
+		{"false", "boolean", false, false},
+		{"bad", "boolean", false, "bad"},
+		{`{"k":"v"}`, "object", false, map[string]interface{}{"k": "v"}},
+		{"bad-json", "object", false, "bad-json"},
+		{`[1,2]`, "array", false, []interface{}{float64(1), float64(2)}},
+		{"hello", "string", false, "hello"},
+		{"hello", "", false, "hello"},
+		// nullable: "null" string → nil
+		{"null", "integer", true, nil},
+		{"null", "string", true, nil},
+		{"null", "number", true, nil},
+		// nullable but value is not "null" → normal coercion
+		{"42", "integer", true, int64(42)},
+		// not nullable: "null" stays as string
+		{"null", "integer", false, "null"},
 	}
 	for _, c := range cases {
-		got := coerce(c.v, c.typ)
+		got := coerce(c.v, c.typ, c.nullable)
 		wantJ, _ := json.Marshal(c.want)
 		gotJ, _ := json.Marshal(got)
 		if string(gotJ) != string(wantJ) {
-			t.Errorf("coerce(%q, %q) = %v (%T), want %v (%T)", c.v, c.typ, got, got, c.want, c.want)
+			t.Errorf("coerce(%q, %q, nullable=%v) = %v (%T), want %v (%T)", c.v, c.typ, c.nullable, got, got, c.want, c.want)
 		}
 	}
 }
@@ -94,16 +104,18 @@ func TestCoerce(t *testing.T) {
 func TestConvertArgs(t *testing.T) {
 	schema := mcp.InputSchema{
 		Properties: map[string]mcp.SchemaProp{
-			"n":    {Type: "integer"},
-			"flag": {Type: "boolean"},
-			"data": {Type: "object"},
+			"n":         {Type: "integer"},
+			"flag":      {Type: "boolean"},
+			"data":      {Type: "object"},
+			"parent_id": {Type: "integer", Nullable: true},
 		},
 	}
 	result := convertArgs(map[string]string{
-		"n":       "42",
-		"flag":    "true",
-		"data":    `{"x":1}`,
-		"unknown": "raw",
+		"n":         "42",
+		"flag":      "true",
+		"data":      `{"x":1}`,
+		"unknown":   "raw",
+		"parent_id": "null",
 	}, schema)
 	if result["n"] != int64(42) {
 		t.Errorf("n = %v (%T), want int64(42)", result["n"], result["n"])
@@ -117,6 +129,9 @@ func TestConvertArgs(t *testing.T) {
 	}
 	if result["unknown"] != "raw" {
 		t.Errorf("unknown = %v, want raw", result["unknown"])
+	}
+	if result["parent_id"] != nil {
+		t.Errorf("parent_id = %v (%T), want nil", result["parent_id"], result["parent_id"])
 	}
 }
 
