@@ -122,6 +122,10 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 
 	// Convert flat string args to typed interface{} map using the schema.
 	args := convertArgs(req.Args, e.schema)
+	// Sanitize include_fields: LLMs often include base fields (e.g. "name")
+	// that are always returned. The MCP server rejects these as invalid.
+	// Strip any value not in the opt-in set parsed from the parameter description.
+	sanitizeIncludeFields(args, e.schema)
 	log.Printf("mcp-plugin: Execute call_id=%s before CallTool server=%q tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
 
 	// Build per-request credential headers for this server from WhoAmI.
@@ -181,6 +185,87 @@ func coerce(v, schemaType string) interface{} {
 		}
 	}
 	return v
+}
+
+// sanitizeIncludeFields removes base-set field names from the include_fields
+// argument. LLMs frequently include fields like "name" or "id" which are
+// always returned by default — the MCP server rejects these as Invalid params.
+// The valid opt-in fields are parsed from the parameter's description text
+// (the "a subset of: field1, field2, ..." part).
+func sanitizeIncludeFields(args map[string]interface{}, schema mcp.InputSchema) {
+	raw, ok := args["include_fields"]
+	if !ok {
+		return
+	}
+	// Strip nil/null values — the MCP server rejects null for array fields.
+	if raw == nil {
+		delete(args, "include_fields")
+		return
+	}
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return
+	}
+	if len(arr) == 0 {
+		return
+	}
+	// Check for ["all"] — always valid, pass through.
+	if len(arr) == 1 {
+		if s, ok := arr[0].(string); ok && s == "all" {
+			return
+		}
+	}
+	// Parse valid opt-in fields from the parameter description.
+	prop, hasProp := schema.Properties["include_fields"]
+	if !hasProp {
+		return
+	}
+	validFields := parseOptInFields(prop.Description)
+	if len(validFields) == 0 {
+		return // can't determine valid set, pass through as-is
+	}
+	// Filter to only valid opt-in fields.
+	var filtered []interface{}
+	for _, v := range arr {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if validFields[s] {
+			filtered = append(filtered, s)
+		} else {
+			log.Printf("mcp-plugin: sanitizeIncludeFields: stripped base field %q", s)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(args, "include_fields")
+	} else {
+		args["include_fields"] = filtered
+	}
+}
+
+// parseOptInFields extracts the set of valid opt-in field names from an
+// include_fields parameter description. It looks for the pattern
+// "a subset of: field1, field2, field3." and returns them as a set.
+func parseOptInFields(desc string) map[string]bool {
+	marker := "a subset of:"
+	idx := strings.Index(strings.ToLower(desc), marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := desc[idx+len(marker):]
+	// Take until the next period or end.
+	if dot := strings.Index(rest, "."); dot >= 0 {
+		rest = rest[:dot]
+	}
+	fields := make(map[string]bool)
+	for _, f := range strings.Split(rest, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			fields[f] = true
+		}
+	}
+	return fields
 }
 
 // credKeys returns the map keys for log output.
