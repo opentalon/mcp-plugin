@@ -121,7 +121,17 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	}
 
 	// Convert flat string args to typed interface{} map using the schema.
+	schemaTypes := make(map[string]string, len(e.schema.Properties))
+	for k, prop := range e.schema.Properties {
+		schemaTypes[k] = prop.Type
+	}
+	log.Printf("mcp-plugin: Execute call_id=%s raw_args=%v schema_types=%v", req.ID, req.Args, schemaTypes)
 	args := convertArgs(req.Args, e.schema)
+	coercedParts := make([]string, 0, len(args))
+	for k, v := range args {
+		coercedParts = append(coercedParts, fmt.Sprintf("%s=%v(%T)", k, v, v))
+	}
+	log.Printf("mcp-plugin: Execute call_id=%s coerced_args=[%s]", req.ID, strings.Join(coercedParts, ", "))
 	// Sanitize include_fields: LLMs often include base fields (e.g. "name")
 	// that are always returned. The MCP server rejects these as invalid.
 	// Strip any value not in the opt-in set parsed from the parameter description.
