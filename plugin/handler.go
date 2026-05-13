@@ -132,6 +132,10 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		coercedParts = append(coercedParts, fmt.Sprintf("%s=%v(%T)", k, v, v))
 	}
 	log.Printf("mcp-plugin: Execute call_id=%s coerced_args=[%s]", req.ID, strings.Join(coercedParts, ", "))
+	// Resolve namespaced tool names in args (e.g. default_tool_name, tool_name
+	// inside workorder tasks). The LLM uses "server__tool" but the MCP server
+	// only knows "tool".
+	h.resolveToolNameArgs(args)
 	// Sanitize include_fields: LLMs often include base fields (e.g. "name")
 	// that are always returned. The MCP server rejects these as invalid.
 	// Strip any value not in the opt-in set parsed from the parameter description.
@@ -156,6 +160,42 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	}
 	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d structured_len=%d", req.ID, len(content), len(structured))
 	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
+}
+
+// resolveToolNameArgs converts namespaced tool names (e.g. "timly__delete-item")
+// to raw MCP tool names (e.g. "delete-item") in arguments that reference tools.
+// This handles default_tool_name and per-task tool_name inside the tasks array.
+// The LLM sees tools as "server__tool" but the MCP server only knows "tool".
+func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
+	if h.registry == nil {
+		return
+	}
+	h.registry.mu.RLock()
+	defer h.registry.mu.RUnlock()
+
+	// Resolve top-level default_tool_name.
+	if v, ok := args["default_tool_name"].(string); ok {
+		if e, found := h.registry.actions[v]; found {
+			args["default_tool_name"] = e.mcpToolName
+		}
+	}
+
+	// Resolve per-task tool_name inside the tasks array.
+	tasks, ok := args["tasks"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, t := range tasks {
+		task, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if v, ok := task["tool_name"].(string); ok {
+			if e, found := h.registry.actions[v]; found {
+				task["tool_name"] = e.mcpToolName
+			}
+		}
+	}
 }
 
 // convertArgs converts map[string]string args to map[string]interface{},
