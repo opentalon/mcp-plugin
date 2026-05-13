@@ -193,11 +193,23 @@ func coerce(v, schemaType string, nullable bool) interface{} {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
 		}
-	case "object", "array":
+	case "object":
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
 			return parsed
 		}
+	case "array":
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			// If the LLM sent a JSON array, use it as-is.
+			if _, ok := parsed.([]interface{}); ok {
+				return parsed
+			}
+			// JSON-parsed but not an array (e.g. a number) — wrap it.
+			return []interface{}{parsed}
+		}
+		// Not valid JSON (e.g. bare string "all") — wrap as single-element array.
+		return []interface{}{v}
 	}
 	return v
 }
