@@ -141,6 +141,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				Name:        actionName,
 				Description: desc,
 				Parameters:  params,
+				ReadOnly:    readOnlyFromAnnotations(tool.Annotations),
 			})
 		}
 	}
@@ -216,6 +217,29 @@ func loadCache(cacheDir, server string) []mcp.Tool {
 
 // schemaToParams converts an MCP JSON Schema to OpenTalon ParameterMsg slice.
 // Complex types (object, array) are mapped to type "json" — callers pass a JSON string.
+// readOnlyFromAnnotations projects the upstream MCP `readOnlyHint`
+// annotation onto the boolean the OpenTalon SDK consumes
+// (pluginpkg.ActionMsg.ReadOnly). The orchestrator's per-call
+// confirmation gate uses that flag to skip the
+// "I'm about to execute X" prompt + planner-narration LLM round-trip
+// for pure-query tools.
+//
+// Three input shapes possible from an upstream server:
+//  1. No annotations object at all (Annotations == nil) — treat as
+//     "no hint", which means "not declared read-only" → false.
+//  2. Annotations present but no ReadOnlyHint field — same as (1).
+//  3. ReadOnlyHint == true or false — passes through.
+//
+// Conservative default (false) is deliberate: an action whose
+// authoring server didn't bother to annotate should still hit the
+// confirmation gate. Skipping is opt-in, not opt-out.
+func readOnlyFromAnnotations(ann *mcp.ToolAnnotation) bool {
+	if ann == nil || ann.ReadOnlyHint == nil {
+		return false
+	}
+	return *ann.ReadOnlyHint
+}
+
 func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 	if len(schema.Properties) == 0 {
 		return nil

@@ -489,3 +489,114 @@ func keys(m map[string]entry) []string {
 	}
 	return out
 }
+
+// -----------------------------------------------------------------------------
+// readOnly propagation (MCP `annotations.readOnlyHint` -> ActionMsg.ReadOnly)
+// -----------------------------------------------------------------------------
+
+func TestReadOnlyFromAnnotations_NilAnnotationsReturnsFalse(t *testing.T) {
+	if got := readOnlyFromAnnotations(nil); got != false {
+		t.Errorf("readOnlyFromAnnotations(nil) = %v, want false", got)
+	}
+}
+
+func TestReadOnlyFromAnnotations_NilHintReturnsFalse(t *testing.T) {
+	// An MCP server that includes an annotations object but doesn't set
+	// readOnlyHint must NOT be treated as read-only. Same conservative
+	// default as the "no annotations at all" case — opt-in only.
+	ann := &mcp.ToolAnnotation{Title: "Some Title"}
+	if got := readOnlyFromAnnotations(ann); got != false {
+		t.Errorf("readOnlyFromAnnotations({Title:...}) = %v, want false (no hint)", got)
+	}
+}
+
+func TestReadOnlyFromAnnotations_TrueHintReturnsTrue(t *testing.T) {
+	yes := true
+	ann := &mcp.ToolAnnotation{ReadOnlyHint: &yes}
+	if got := readOnlyFromAnnotations(ann); got != true {
+		t.Errorf("readOnlyFromAnnotations({ReadOnlyHint:true}) = %v, want true", got)
+	}
+}
+
+func TestReadOnlyFromAnnotations_FalseHintReturnsFalse(t *testing.T) {
+	// Explicit false from the upstream server is honoured — same as
+	// missing, but distinguishes "server thought about it and declared
+	// not-read-only" from "server didn't think about it".
+	no := false
+	ann := &mcp.ToolAnnotation{ReadOnlyHint: &no}
+	if got := readOnlyFromAnnotations(ann); got != false {
+		t.Errorf("readOnlyFromAnnotations({ReadOnlyHint:false}) = %v, want false", got)
+	}
+}
+
+// fakeMCPHTTPServerWithAnnotatedTools is a Streamable HTTP MCP server
+// that returns two tools — one annotated `readOnlyHint:true`, one
+// annotated `readOnlyHint:false`. Used by the integration test below
+// to verify the propagation runs through the live tools/list path,
+// not just the helper in isolation.
+func fakeMCPHTTPServerWithAnnotatedTools(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[
+				{"name":"list_items","description":"Pure query","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true}},
+				{"name":"delete_item","description":"Mutation","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":false}},
+				{"name":"unannotated","description":"No hint","inputSchema":{"type":"object","properties":{}}}
+			]}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuild_propagatesReadOnlyHintToActionMsg(t *testing.T) {
+	srv := fakeMCPHTTPServerWithAnnotatedTools(t)
+	ctx := testCtx(t)
+	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
+
+	r, err := Build(ctx, []config.ServerConfig{cfg})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	byName := make(map[string]bool, len(r.caps.Actions))
+	for _, a := range r.caps.Actions {
+		byName[a.Name] = a.ReadOnly
+	}
+
+	if got := byName["srv__list_items"]; got != true {
+		t.Errorf("srv__list_items ReadOnly = %v, want true (annotation readOnlyHint:true)", got)
+	}
+	if got := byName["srv__delete_item"]; got != false {
+		t.Errorf("srv__delete_item ReadOnly = %v, want false (annotation readOnlyHint:false)", got)
+	}
+	if got := byName["srv__unannotated"]; got != false {
+		t.Errorf("srv__unannotated ReadOnly = %v, want false (no annotation = conservative default)", got)
+	}
+}
