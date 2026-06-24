@@ -2,9 +2,10 @@ module github.com/opentalon/mcp-plugin
 
 go 1.25
 
-require github.com/opentalon/opentalon v0.0.17
+require github.com/opentalon/opentalon v0.0.19-0.20260624161113-c4805b99528b
 
 require (
+	github.com/google/uuid v1.6.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect

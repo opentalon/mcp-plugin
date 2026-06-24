@@ -36,6 +36,12 @@ type Handler struct {
 	refreshing bool                  // true while a refresh Build is in flight; coalesces concurrent calls
 }
 
+// Compile-time assertion that Handler satisfies the host's optional Refreshable
+// interface. If the core SDK's signature ever drifts, this fails the build here
+// rather than silently disabling refresh (the host's type assertion would just
+// miss and fall back to Unimplemented).
+var _ pluginpkg.Refreshable = (*Handler)(nil)
+
 // NewHandler creates a Handler. The registry is nil until Configure is called
 // or SetRegistry is used directly (e.g. when bootstrapping from the env var).
 func NewHandler(ctx context.Context) *Handler {
