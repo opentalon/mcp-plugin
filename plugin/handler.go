@@ -8,17 +8,39 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/opentalon/mcp-plugin/config"
 	"github.com/opentalon/mcp-plugin/mcp"
 	pluginpkg "github.com/opentalon/opentalon/pkg/plugin"
 )
 
-// Handler implements pluginpkg.Handler (and pluginpkg.Configurable) using the MCP registry.
+// refreshGraceCloseDelay is how long a replaced registry's connections stay
+// open after a refresh swaps in a freshly built one, so an in-flight tool call
+// (CallTool round-trips with a 60s timeout) finishes on the old connection
+// instead of being cut off.
+const refreshGraceCloseDelay = 70 * time.Second
+
+// Handler implements pluginpkg.Handler, pluginpkg.Configurable and
+// pluginpkg.Refreshable using the MCP registry.
 type Handler struct {
-	ctx      context.Context
-	registry *Registry
+	ctx context.Context
+
+	// mu guards the mutable handler state below. registry is swapped under mu
+	// on each refresh; readers (Capabilities, Execute) load the pointer under
+	// RLock and then use the registry's own lock for its internal fields.
+	mu         sync.RWMutex
+	registry   *Registry
+	serverCfgs []config.ServerConfig // captured at Configure/bootstrap, replayed by RefreshCapabilities
+	refreshing bool                  // true while a refresh Build is in flight; coalesces concurrent calls
 }
+
+// Compile-time assertion that Handler satisfies the host's optional Refreshable
+// interface. If the core SDK's signature ever drifts, this fails the build here
+// rather than silently disabling refresh (the host's type assertion would just
+// miss and fall back to Unimplemented).
+var _ pluginpkg.Refreshable = (*Handler)(nil)
 
 // NewHandler creates a Handler. The registry is nil until Configure is called
 // or SetRegistry is used directly (e.g. when bootstrapping from the env var).
@@ -27,8 +49,13 @@ func NewHandler(ctx context.Context) *Handler {
 }
 
 // SetRegistry sets the registry directly, used for env-var bootstrapping.
-func (h *Handler) SetRegistry(r *Registry) {
+// serverCfgs are stored so RefreshCapabilities can rebuild from the same
+// configuration without a host Init RPC.
+func (h *Handler) SetRegistry(r *Registry, serverCfgs []config.ServerConfig) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.registry = r
+	h.serverCfgs = serverCfgs
 }
 
 // Configure implements pluginpkg.Configurable. It is called by the host via
@@ -50,34 +77,145 @@ func (h *Handler) Configure(configJSON string) error {
 		log.Printf("mcp-plugin: Configure Build err: %v", err)
 		return err
 	}
-	// Close old registry's connections before replacing (prevents goroutine
-	// leaks from stale SSE readLoops and "has no subscriber" log spam).
-	if h.registry != nil {
-		h.registry.Close()
-	}
+	h.mu.Lock()
+	old := h.registry
 	h.registry = registry
-	h.registry.StartBackgroundRetry(h.ctx)
+	h.serverCfgs = cfg.Servers
+	h.mu.Unlock()
+
+	registry.StartBackgroundRetry(h.ctx)
+	// A re-Configure replaces a live registry; retire its connections gracefully
+	// so any in-flight tool call finishes first (at first startup old is nil).
+	if old != nil {
+		h.graceCloseRegistry(old)
+	}
 	log.Printf("mcp-plugin: init done (Configure): registry ready servers=%d actions=%d",
 		len(cfg.Servers), len(registry.actions))
 	return nil
 }
 
-// Capabilities returns all namespaced MCP tools across all servers.
+// Capabilities returns the current (cached) namespaced MCP tools across all
+// servers. It is a pure read; the host refreshes the cache via
+// RefreshCapabilities.
 func (h *Handler) Capabilities() pluginpkg.CapabilitiesMsg {
-	if h.registry == nil {
-		return pluginpkg.CapabilitiesMsg{
-			Name:        "mcp",
-			Description: "Universal MCP bridge: exposes tools from all configured MCP servers",
-		}
+	h.mu.RLock()
+	reg := h.registry
+	h.mu.RUnlock()
+	if reg == nil {
+		return defaultCaps()
 	}
-	return h.registry.caps
+	return reg.capsSnapshot()
+}
+
+// RefreshCapabilities re-fetches capabilities live from the upstream MCP servers
+// and atomically swaps in a freshly built registry, returning the fresh set. It
+// implements pluginpkg.Refreshable: the host calls it on its periodic
+// corpus-sync poll so upstream changes (tool descriptions, server instructions,
+// knowledge articles) propagate without a plugin restart.
+//
+// Concurrent calls are coalesced via the refreshing flag: a call that finds a
+// refresh already in flight returns the current capabilities instead of
+// starting a second Build. On a build failure the previous capabilities are
+// kept and returned — a transient upstream outage never empties the set.
+func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
+	h.mu.Lock()
+	if h.refreshing || h.registry == nil || len(h.serverCfgs) == 0 {
+		reg := h.registry
+		h.mu.Unlock()
+		if reg == nil {
+			return defaultCaps()
+		}
+		return reg.capsSnapshot()
+	}
+	h.refreshing = true
+	cfgs := h.serverCfgs
+	prevActions := len(h.registry.caps.Actions)
+	h.mu.Unlock()
+	// Always clear the in-flight flag, even if Build panics — otherwise a panic
+	// would leave refreshing == true and wedge every later refresh into the
+	// coalescing path permanently. The flag covers the whole operation (build +
+	// swap), so a concurrent call coalesces until this one fully returns.
+	defer func() {
+		h.mu.Lock()
+		h.refreshing = false
+		h.mu.Unlock()
+	}()
+
+	log.Printf("mcp-plugin: refresh: re-fetching capabilities from %d server(s)", len(cfgs))
+	newReg, err := Build(h.ctx, cfgs)
+
+	h.mu.Lock()
+	if err != nil {
+		reg := h.registry
+		h.mu.Unlock()
+		log.Printf("mcp-plugin: refresh: build failed, keeping previous capabilities: %v", err)
+		return reg.capsSnapshot()
+	}
+	// Don't swap to a degraded build. If any server fell back to its cache
+	// (offline) or had no cache at all (failed), this refresh didn't get a fully
+	// live view — swapping would push [offline]-prefixed / stale descriptions to
+	// the host and on into the corpus, churning every doc on a transient upstream
+	// blip and blanking it again on recovery. Keep the last good live
+	// capabilities; a later refresh swaps once the upstream is fully reachable.
+	// This is all-or-nothing across servers: with multiple upstreams, one
+	// persistently unreachable server holds back propagation from the healthy
+	// ones until it recovers — an accepted trade-off for the current
+	// single-upstream setup, revisit if more servers are bridged.
+	if len(newReg.failedServers) > 0 || len(newReg.offlineServers) > 0 {
+		reg := h.registry
+		h.mu.Unlock()
+		log.Printf("mcp-plugin: refresh: upstream degraded (%d offline, %d unreachable), keeping previous capabilities",
+			len(newReg.offlineServers), len(newReg.failedServers))
+		newReg.Close()
+		return reg.capsSnapshot()
+	}
+	old := h.registry
+	h.registry = newReg
+	h.mu.Unlock()
+
+	log.Printf("mcp-plugin: refresh: done actions=%d (was %d) sysprompt_bytes=%d glossary=%d knowledge=%d",
+		len(newReg.caps.Actions), prevActions, len(newReg.caps.SystemPromptAddition),
+		len(newReg.caps.Glossary), len(newReg.caps.KnowledgeArticles))
+
+	// Only fully-live builds reach here, so there are no offline/failed servers
+	// left to retry — we deliberately don't start new background-retry loops on
+	// refresh (they'd accumulate across refreshes); a degraded upstream is handled
+	// by the guard above plus the next periodic refresh.
+	if old != nil {
+		h.graceCloseRegistry(old)
+	}
+	return newReg.capsSnapshot()
+}
+
+// graceCloseRegistry closes a replaced registry's connections after a grace
+// delay, so in-flight tool calls on the old connections finish first.
+func (h *Handler) graceCloseRegistry(old *Registry) {
+	go func() {
+		select {
+		case <-h.ctx.Done():
+		case <-time.After(refreshGraceCloseDelay):
+		}
+		log.Printf("mcp-plugin: refresh: closing previous connections after %s grace", refreshGraceCloseDelay)
+		old.Close()
+	}()
+}
+
+// defaultCaps is the capability set served before the registry is configured.
+func defaultCaps() pluginpkg.CapabilitiesMsg {
+	return pluginpkg.CapabilitiesMsg{
+		Name:        "mcp",
+		Description: "Universal MCP bridge: exposes tools from all configured MCP servers",
+	}
 }
 
 // Execute routes a tool call to the correct MCP server.
 func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	log.Printf("mcp-plugin: Execute begin call_id=%s action=%q", req.ID, req.Action)
 
-	if h.registry == nil {
+	h.mu.RLock()
+	reg := h.registry
+	h.mu.RUnlock()
+	if reg == nil {
 		log.Printf("mcp-plugin: Execute call_id=%s err: not yet configured", req.ID)
 		return pluginpkg.Response{
 			CallID: req.ID,
@@ -85,9 +223,9 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		}
 	}
 
-	h.registry.mu.RLock()
-	e, ok := h.registry.actions[req.Action]
-	h.registry.mu.RUnlock()
+	reg.mu.RLock()
+	e, ok := reg.actions[req.Action]
+	reg.mu.RUnlock()
 
 	if !ok {
 		log.Printf("mcp-plugin: Execute call_id=%s unknown action=%q", req.ID, req.Action)
@@ -109,7 +247,7 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 			}
 		}
 		log.Printf("mcp-plugin: server %s: not alive for action %q (%s), reconnecting", e.cfg.Server, req.Action, reason)
-		client, err := h.registry.reconnect(h.ctx, e.cfg)
+		client, err := reg.reconnect(h.ctx, e.cfg)
 		if err != nil {
 			log.Printf("mcp-plugin: server %s: reconnect failed: %v", e.cfg.Server, err)
 			return pluginpkg.Response{
@@ -167,15 +305,18 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 // This handles default_tool_name and per-task tool_name inside the tasks array.
 // The LLM sees tools as "server__tool" but the MCP server only knows "tool".
 func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
-	if h.registry == nil {
+	h.mu.RLock()
+	reg := h.registry
+	h.mu.RUnlock()
+	if reg == nil {
 		return
 	}
-	h.registry.mu.RLock()
-	defer h.registry.mu.RUnlock()
+	reg.mu.RLock()
+	defer reg.mu.RUnlock()
 
 	// Resolve top-level default_tool_name.
 	if v, ok := args["default_tool_name"].(string); ok {
-		if e, found := h.registry.actions[v]; found {
+		if e, found := reg.actions[v]; found {
 			args["default_tool_name"] = e.mcpToolName
 		}
 	}
@@ -191,7 +332,7 @@ func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
 			continue
 		}
 		if v, ok := task["tool_name"].(string); ok {
-			if e, found := h.registry.actions[v]; found {
+			if e, found := reg.actions[v]; found {
 				task["tool_name"] = e.mcpToolName
 			}
 		}

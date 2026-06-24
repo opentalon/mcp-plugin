@@ -38,7 +38,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("mcp-plugin: build registry: %v", err)
 		}
-		handler.SetRegistry(registry)
+		handler.SetRegistry(registry, cfgs)
 		log.Printf("mcp-plugin: init done (env bootstrap): registry ready from %d server config(s); host Init/Configure may still run", len(cfgs))
 	}
 
