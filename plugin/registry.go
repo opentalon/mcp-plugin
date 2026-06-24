@@ -417,6 +417,24 @@ func (r *Registry) reconnect(ctx context.Context, cfg config.ServerConfig) (*mcp
 	return client, nil
 }
 
+// capsSnapshot returns the registry's capabilities safe to hand to a caller that
+// reads them without holding the registry lock. reconnectOfflineLoop mutates
+// action Descriptions in place (stripping the [offline] prefix) under r.mu, so
+// the Actions slice is copied into a fresh backing array here — returning the
+// shared slice would let that background write race with the caller's read (a
+// torn string). The other caps fields are not mutated after Build, so a shallow
+// struct copy is enough.
+func (r *Registry) capsSnapshot() pluginpkg.CapabilitiesMsg {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	caps := r.caps
+	if len(r.caps.Actions) > 0 {
+		caps.Actions = make([]pluginpkg.ActionMsg, len(r.caps.Actions))
+		copy(caps.Actions, r.caps.Actions)
+	}
+	return caps
+}
+
 // Close shuts down all live MCP client connections held by the registry.
 // It is safe to call multiple times.
 func (r *Registry) Close() {

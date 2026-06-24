@@ -98,7 +98,7 @@ func (h *Handler) Capabilities() pluginpkg.CapabilitiesMsg {
 	if reg == nil {
 		return defaultCaps()
 	}
-	return reg.caps
+	return reg.capsSnapshot()
 }
 
 // RefreshCapabilities re-fetches capabilities live from the upstream MCP servers
@@ -119,23 +119,31 @@ func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
 		if reg == nil {
 			return defaultCaps()
 		}
-		return reg.caps
+		return reg.capsSnapshot()
 	}
 	h.refreshing = true
 	cfgs := h.serverCfgs
 	prevActions := len(h.registry.caps.Actions)
 	h.mu.Unlock()
+	// Always clear the in-flight flag, even if Build panics — otherwise a panic
+	// would leave refreshing == true and wedge every later refresh into the
+	// coalescing path permanently. The flag covers the whole operation (build +
+	// swap), so a concurrent call coalesces until this one fully returns.
+	defer func() {
+		h.mu.Lock()
+		h.refreshing = false
+		h.mu.Unlock()
+	}()
 
 	log.Printf("mcp-plugin: refresh: re-fetching capabilities from %d server(s)", len(cfgs))
 	newReg, err := Build(h.ctx, cfgs)
 
 	h.mu.Lock()
-	h.refreshing = false
 	if err != nil {
 		reg := h.registry
 		h.mu.Unlock()
 		log.Printf("mcp-plugin: refresh: build failed, keeping previous capabilities: %v", err)
-		return reg.caps
+		return reg.capsSnapshot()
 	}
 	// Don't swap to a degraded build. If any server fell back to its cache
 	// (offline) or had no cache at all (failed), this refresh didn't get a fully
@@ -143,13 +151,17 @@ func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
 	// the host and on into the corpus, churning every doc on a transient upstream
 	// blip and blanking it again on recovery. Keep the last good live
 	// capabilities; a later refresh swaps once the upstream is fully reachable.
+	// This is all-or-nothing across servers: with multiple upstreams, one
+	// persistently unreachable server holds back propagation from the healthy
+	// ones until it recovers — an accepted trade-off for the current
+	// single-upstream setup, revisit if more servers are bridged.
 	if len(newReg.failedServers) > 0 || len(newReg.offlineServers) > 0 {
 		reg := h.registry
 		h.mu.Unlock()
 		log.Printf("mcp-plugin: refresh: upstream degraded (%d offline, %d unreachable), keeping previous capabilities",
 			len(newReg.offlineServers), len(newReg.failedServers))
 		newReg.Close()
-		return reg.caps
+		return reg.capsSnapshot()
 	}
 	old := h.registry
 	h.registry = newReg
@@ -166,7 +178,7 @@ func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
 	if old != nil {
 		h.graceCloseRegistry(old)
 	}
-	return newReg.caps
+	return newReg.capsSnapshot()
 }
 
 // graceCloseRegistry closes a replaced registry's connections after a grace

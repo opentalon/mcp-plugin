@@ -143,3 +143,61 @@ func TestHandler_RefreshCapabilities_keepsPreviousOnDegradedUpstream(t *testing.
 		t.Errorf("Capabilities lost the live caps after a degraded refresh, got %+v", h.Capabilities().Actions)
 	}
 }
+
+// TestCapsSnapshotIsIndependentOfInPlaceMutation pins the race fix: a snapshot
+// handed to a caller must not alias the Actions backing array that
+// reconnectOfflineLoop mutates in place (stripping the [offline] prefix under
+// r.mu). Without the copy, that background write would race with the caller
+// reading the returned Description — a torn string.
+func TestCapsSnapshotIsIndependentOfInPlaceMutation(t *testing.T) {
+	r := &Registry{
+		actions: map[string]entry{},
+		caps: pluginpkg.CapabilitiesMsg{
+			Name:    "mcp",
+			Actions: []pluginpkg.ActionMsg{{Name: "s__a", Description: "[offline] do a"}},
+		},
+	}
+	snap := r.capsSnapshot()
+
+	// Simulate reconnectOfflineLoop stripping the prefix in place.
+	r.mu.Lock()
+	r.caps.Actions[0].Description = "do a"
+	r.mu.Unlock()
+
+	if got := snap.Actions[0].Description; got != "[offline] do a" {
+		t.Errorf("snapshot Description changed under in-place mutation = %q, want the value at snapshot time", got)
+	}
+}
+
+// TestHandler_RefreshCapabilities_coalescesWhenAlreadyRefreshing pins the
+// coalescing branch: while a refresh Build is in flight (refreshing == true), a
+// concurrent RefreshCapabilities returns the current capabilities instead of
+// starting a second Build. The flag is set directly (white-box) for a
+// deterministic check without racing two real Builds.
+func TestHandler_RefreshCapabilities_coalescesWhenAlreadyRefreshing(t *testing.T) {
+	srv, setTool, _ := mutableMCPServer(t)
+	ctx := testCtx(t)
+	cfgs := []config.ServerConfig{{Server: "s", URL: srv.URL + "/mcp"}}
+
+	reg, err := Build(ctx, cfgs)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	h := NewHandler(ctx)
+	h.SetRegistry(reg, cfgs)
+
+	// A refresh is "in flight".
+	h.mu.Lock()
+	h.refreshing = true
+	h.mu.Unlock()
+
+	// Upstream changed, but the coalesced call must NOT re-fetch it.
+	setTool("new")
+	caps := h.RefreshCapabilities()
+	if capsHasAction(caps, "s__new") {
+		t.Errorf("coalesced refresh must not re-fetch upstream, got %+v", caps.Actions)
+	}
+	if !capsHasAction(caps, "s__old") {
+		t.Errorf("coalesced refresh should return current caps (s__old), got %+v", caps.Actions)
+	}
+}
