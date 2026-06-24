@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -260,6 +261,11 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 			Required:    required[name],
 		})
 	}
+	// Sort by name: schema.Properties is a Go map, so iteration order is
+	// randomized per process. A stable order keeps the serialized parameters
+	// (and any downstream content hash over them) deterministic across restarts
+	// and refreshes, so an unchanged tool is not seen as "changed".
+	sort.Slice(params, func(i, j int) bool { return params[i].Name < params[j].Name })
 	return params
 }
 

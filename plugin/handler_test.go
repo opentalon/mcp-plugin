@@ -137,7 +137,7 @@ func TestConvertArgs(t *testing.T) {
 
 func TestHandler_Execute_unknownAction(t *testing.T) {
 	h := NewHandler(context.Background())
-	h.SetRegistry(&Registry{actions: make(map[string]entry)})
+	h.SetRegistry(&Registry{actions: make(map[string]entry)}, nil)
 	resp := h.Execute(pluginpkg.Request{ID: "req-1", Action: "does-not-exist"})
 	if resp.Error == "" {
 		t.Error("expected non-empty error for unknown action")
@@ -159,7 +159,7 @@ func TestHandler_Capabilities(t *testing.T) {
 		},
 	}
 	h := NewHandler(context.Background())
-	h.SetRegistry(r)
+	h.SetRegistry(r, nil)
 	caps := h.Capabilities()
 	if caps.Name != "mcp" {
 		t.Errorf("Name = %q, want mcp", caps.Name)
