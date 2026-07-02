@@ -600,3 +600,27 @@ func TestBuild_propagatesReadOnlyHintToActionMsg(t *testing.T) {
 		t.Errorf("srv__unannotated ReadOnly = %v, want false (no annotation = conservative default)", got)
 	}
 }
+
+func TestAlwaysIncludeFromMeta(t *testing.T) {
+	cases := []struct {
+		name string
+		meta json.RawMessage
+		want bool
+	}{
+		{"nil meta", nil, false},
+		{"empty meta", json.RawMessage(``), false},
+		{"empty object", json.RawMessage(`{}`), false},
+		{"flag true", json.RawMessage(`{"always_include":true}`), true},
+		{"flag false", json.RawMessage(`{"always_include":false}`), false},
+		{"other keys only", json.RawMessage(`{"something_else":true}`), false},
+		{"flag true among others", json.RawMessage(`{"x":1,"always_include":true}`), true},
+		{"malformed json", json.RawMessage(`{not json`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := alwaysIncludeFromMeta(tc.meta); got != tc.want {
+				t.Errorf("alwaysIncludeFromMeta(%s) = %v, want %v", string(tc.meta), got, tc.want)
+			}
+		})
+	}
+}
