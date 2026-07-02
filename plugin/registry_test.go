@@ -624,3 +624,72 @@ func TestAlwaysIncludeFromMeta(t *testing.T) {
 		})
 	}
 }
+
+// fakeMCPHTTPServerWithMetaTools serves three tools: one pinned via
+// _meta.always_include=true, one explicitly false, and one without _meta.
+func fakeMCPHTTPServerWithMetaTools(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":[
+				{"name":"list_items","description":"Pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":true}},
+				{"name":"show_item","description":"Not pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":false}},
+				{"name":"no_meta","description":"No meta","inputSchema":{"type":"object","properties":{}}}
+			]}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuild_propagatesAlwaysIncludeMetaToActionMsg(t *testing.T) {
+	srv := fakeMCPHTTPServerWithMetaTools(t)
+	ctx := testCtx(t)
+	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
+
+	r, err := Build(ctx, []config.ServerConfig{cfg})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	byName := make(map[string]bool, len(r.caps.Actions))
+	for _, a := range r.caps.Actions {
+		byName[a.Name] = a.AlwaysInclude
+	}
+
+	if got := byName["srv__list_items"]; got != true {
+		t.Errorf("srv__list_items AlwaysInclude = %v, want true (_meta.always_include:true)", got)
+	}
+	if got := byName["srv__show_item"]; got != false {
+		t.Errorf("srv__show_item AlwaysInclude = %v, want false (_meta.always_include:false)", got)
+	}
+	if got := byName["srv__no_meta"]; got != false {
+		t.Errorf("srv__no_meta AlwaysInclude = %v, want false (no _meta = conservative default)", got)
+	}
+}
