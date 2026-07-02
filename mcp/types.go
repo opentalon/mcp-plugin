@@ -109,6 +109,7 @@ type Tool struct {
 	InputSchema  InputSchema     `json:"inputSchema"`
 	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`  // optional JSON Schema for structured output
 	Annotations  *ToolAnnotation `json:"annotations,omitempty"`   // optional MCP tool annotations
+	Meta         json.RawMessage `json:"_meta,omitempty"`         // optional MCP `_meta` extension bag (e.g. an always_include tier pin)
 }
 
 // ToolAnnotation carries MCP tool metadata hints.

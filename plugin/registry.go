@@ -139,10 +139,11 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			}
 			params := schemaToParams(tool.InputSchema)
 			r.caps.Actions = append(r.caps.Actions, pluginpkg.ActionMsg{
-				Name:        actionName,
-				Description: desc,
-				Parameters:  params,
-				ReadOnly:    readOnlyFromAnnotations(tool.Annotations),
+				Name:          actionName,
+				Description:   desc,
+				Parameters:    params,
+				ReadOnly:      readOnlyFromAnnotations(tool.Annotations),
+				AlwaysInclude: alwaysIncludeFromMeta(tool.Meta),
 			})
 		}
 	}
@@ -239,6 +240,30 @@ func readOnlyFromAnnotations(ann *mcp.ToolAnnotation) bool {
 		return false
 	}
 	return *ann.ReadOnlyHint
+}
+
+// alwaysIncludeFromMeta projects an MCP server's `_meta.always_include` flag
+// onto the tier flag the OpenTalon SDK consumes
+// (pluginpkg.ActionMsg.AlwaysInclude). When true, the orchestrator keeps the
+// action's full schema in the LLM's tools array every turn instead of leaving
+// it as a name-only catalog entry the model must load via get_tool_details.
+// A server sets it on the tools it wants one call away (e.g. its read/list
+// tools), so they need no discovery round-trip.
+//
+// Conservative default (false): a missing, empty, or malformed `_meta` — or a
+// server that never sets the flag — leaves the action catalog-only. Opting a
+// tool into the always-loaded tier is deliberate, never accidental.
+func alwaysIncludeFromMeta(meta json.RawMessage) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	var m struct {
+		AlwaysInclude bool `json:"always_include"`
+	}
+	if err := json.Unmarshal(meta, &m); err != nil {
+		return false
+	}
+	return m.AlwaysInclude
 }
 
 func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
