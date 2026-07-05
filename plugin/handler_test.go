@@ -147,6 +147,71 @@ func TestHandler_Execute_unknownAction(t *testing.T) {
 	}
 }
 
+func TestResolveToolNameArgs(t *testing.T) {
+	h := NewHandler(context.Background())
+	// Registered as "<server>__<tool>"; the raw MCP name is "update-item".
+	h.SetRegistry(&Registry{
+		actions: map[string]entry{
+			"timly__update-item": {mcpToolName: "update-item"},
+		},
+	}, nil)
+
+	taskToolName := func(args map[string]interface{}, i int) interface{} {
+		return args["tasks"].([]interface{})[i].(map[string]interface{})["tool_name"]
+	}
+
+	t.Run("canonical double-prefixed FQN in a task resolves to the raw name", func(t *testing.T) {
+		// The LLM sees and emits "timly__timly__update-item"; the server wants "update-item".
+		args := map[string]interface{}{
+			"tasks": []interface{}{
+				map[string]interface{}{"tool_name": "timly__timly__update-item", "id": 1},
+			},
+		}
+		h.resolveToolNameArgs(args)
+		if got := taskToolName(args, 0); got != "update-item" {
+			t.Errorf("tool_name = %v, want update-item", got)
+		}
+	})
+
+	t.Run("action key resolves and a bare name passes through unchanged", func(t *testing.T) {
+		args := map[string]interface{}{
+			"tasks": []interface{}{
+				map[string]interface{}{"tool_name": "timly__update-item"},
+				map[string]interface{}{"tool_name": "update-item"},
+			},
+		}
+		h.resolveToolNameArgs(args)
+		if got := taskToolName(args, 0); got != "update-item" {
+			t.Errorf("action-key tool_name = %v, want update-item", got)
+		}
+		if got := taskToolName(args, 1); got != "update-item" {
+			t.Errorf("bare tool_name = %v, want update-item (unchanged)", got)
+		}
+	})
+
+	t.Run("default_tool_name and the top-level tool_name filter resolve the canonical FQN", func(t *testing.T) {
+		args := map[string]interface{}{
+			"default_tool_name": "timly__timly__update-item",
+			"tool_name":         "timly__timly__update-item",
+		}
+		h.resolveToolNameArgs(args)
+		if got := args["default_tool_name"]; got != "update-item" {
+			t.Errorf("default_tool_name = %v, want update-item", got)
+		}
+		if got := args["tool_name"]; got != "update-item" {
+			t.Errorf("tool_name = %v, want update-item", got)
+		}
+	})
+
+	t.Run("a value resolving to no known tool is left untouched", func(t *testing.T) {
+		args := map[string]interface{}{"tool_name": "timly__timly__not-a-tool"}
+		h.resolveToolNameArgs(args)
+		if got := args["tool_name"]; got != "timly__timly__not-a-tool" {
+			t.Errorf("unknown tool_name = %v, want unchanged", got)
+		}
+	})
+}
+
 func TestHandler_Capabilities(t *testing.T) {
 	r := &Registry{
 		actions: make(map[string]entry),

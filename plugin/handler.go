@@ -300,10 +300,22 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
 }
 
-// resolveToolNameArgs converts namespaced tool names (e.g. "timly__delete-item")
-// to raw MCP tool names (e.g. "delete-item") in arguments that reference tools.
-// This handles default_tool_name and per-task tool_name inside the tasks array.
-// The LLM sees tools as "server__tool" but the MCP server only knows "tool".
+// resolveToolNameArgs converts a namespaced tool name the LLM supplied as an
+// argument VALUE (e.g. "timly__delete-item") to the raw MCP tool name the server
+// expects (e.g. "delete-item"). It covers the tool-name-carrying args of the
+// batch-job tools: default_tool_name and per-task tool_name (submit-batch-job)
+// and the tool_name filter (list-batch-jobs).
+//
+// The value can arrive in three shapes, all resolved here:
+//   - the raw name ("delete-item") — left untouched, the server already knows it;
+//   - the "<server>__<tool>" action key ("timly__delete-item");
+//   - the canonical "<plugin>__<server>__<tool>" FQN the LLM actually sees, since
+//     the core prefixes the action key with the plugin name
+//     ("timly__timly__delete-item"). Missing this form is why a batch task's
+//     tool_name reached the server double-prefixed and was rejected.
+//
+// A value that resolves to no known action is left unchanged, so a non-tool
+// string is never rewritten.
 func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
 	h.mu.RLock()
 	reg := h.registry
@@ -314,14 +326,31 @@ func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
 
-	// Resolve top-level default_tool_name.
-	if v, ok := args["default_tool_name"].(string); ok {
+	resolve := func(v string) (string, bool) {
 		if e, found := reg.actions[v]; found {
-			args["default_tool_name"] = e.mcpToolName
+			return e.mcpToolName, true
+		}
+		// Strip the leading "<segment>__" the core adds on top of the action
+		// key, recovering the "<server>__<tool>" key from the canonical FQN.
+		if i := strings.Index(v, "__"); i >= 0 {
+			if e, found := reg.actions[v[i+2:]]; found {
+				return e.mcpToolName, true
+			}
+		}
+		return "", false
+	}
+
+	// Top-level tool-name args: default_tool_name (submit-batch-job) and
+	// tool_name (list-batch-jobs filter).
+	for _, key := range []string{"default_tool_name", "tool_name"} {
+		if v, ok := args[key].(string); ok {
+			if raw, found := resolve(v); found {
+				args[key] = raw
+			}
 		}
 	}
 
-	// Resolve per-task tool_name inside the tasks array.
+	// Per-task tool_name inside the tasks array (submit-batch-job).
 	tasks, ok := args["tasks"].([]interface{})
 	if !ok {
 		return
@@ -332,8 +361,8 @@ func (h *Handler) resolveToolNameArgs(args map[string]interface{}) {
 			continue
 		}
 		if v, ok := task["tool_name"].(string); ok {
-			if e, found := reg.actions[v]; found {
-				task["tool_name"] = e.mcpToolName
+			if raw, found := resolve(v); found {
+				task["tool_name"] = raw
 			}
 		}
 	}
