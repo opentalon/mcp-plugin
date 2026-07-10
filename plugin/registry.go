@@ -138,12 +138,20 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				desc += "\n\nOutput schema (return JSON matching this): " + string(tool.OutputSchema)
 			}
 			params := schemaToParams(tool.InputSchema)
+			// Declare the context args this server wants forwarded as headers
+			// so the host injects them into req.Args before Execute; the
+			// handler then pops them into the configured HTTP header.
+			var injectContextArgs []string
+			for ctxArg := range cfg.ContextHeaders {
+				injectContextArgs = append(injectContextArgs, ctxArg)
+			}
 			r.caps.Actions = append(r.caps.Actions, pluginpkg.ActionMsg{
-				Name:          actionName,
-				Description:   desc,
-				Parameters:    params,
-				ReadOnly:      readOnlyFromAnnotations(tool.Annotations),
-				AlwaysInclude: alwaysIncludeFromMeta(tool.Meta),
+				Name:              actionName,
+				Description:       desc,
+				Parameters:        params,
+				ReadOnly:          readOnlyFromAnnotations(tool.Annotations),
+				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
+				InjectContextArgs: injectContextArgs,
 			})
 		}
 	}
