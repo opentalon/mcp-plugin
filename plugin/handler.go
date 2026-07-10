@@ -304,6 +304,11 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 			}
 			extraHeaders.Set(headerName, val)
 			log.Printf("mcp-plugin: Execute call_id=%s forwarding context arg %q as header %q for server %q", req.ID, ctxArg, headerName, e.cfg.Server)
+		} else {
+			// Present but not forwardable (empty header name, empty or
+			// non-string value). Still stripped so it can't leak into the
+			// tool args; logged so a misconfigured mapping isn't silent.
+			log.Printf("mcp-plugin: Execute call_id=%s dropping context arg %q without forwarding (empty header name or non-string value) for server %q", req.ID, ctxArg, e.cfg.Server)
 		}
 		delete(args, ctxArg)
 	}
