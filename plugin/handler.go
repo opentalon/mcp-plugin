@@ -290,6 +290,29 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		log.Printf("mcp-plugin: Execute call_id=%s no credential header for server %q (available: %v)", req.ID, e.cfg.Server, credKeys(req.CredentialHeaders))
 	}
 
+	// Forward configured context args (injected by the host into req.Args)
+	// as HTTP headers, and remove them from the tool arguments so they are
+	// not passed to the downstream tool as parameters.
+	for ctxArg, headerName := range e.cfg.ContextHeaders {
+		raw, ok := args[ctxArg]
+		if !ok {
+			continue
+		}
+		if val, isStr := raw.(string); isStr && headerName != "" && val != "" {
+			if extraHeaders == nil {
+				extraHeaders = http.Header{}
+			}
+			extraHeaders.Set(headerName, val)
+			log.Printf("mcp-plugin: Execute call_id=%s forwarding context arg %q as header %q for server %q", req.ID, ctxArg, headerName, e.cfg.Server)
+		} else {
+			// Present but not forwardable (empty header name, empty or
+			// non-string value). Still stripped so it can't leak into the
+			// tool args; logged so a misconfigured mapping isn't silent.
+			log.Printf("mcp-plugin: Execute call_id=%s dropping context arg %q without forwarding (empty header name or non-string value) for server %q", req.ID, ctxArg, e.cfg.Server)
+		}
+		delete(args, ctxArg)
+	}
+
 	content, structured, err := e.client.CallTool(e.mcpToolName, args, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)

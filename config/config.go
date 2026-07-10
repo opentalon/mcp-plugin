@@ -15,6 +15,13 @@ type ServerConfig struct {
 	Server  string            `json:"server"`
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// ContextHeaders maps an injected context-arg name (e.g. "session_id")
+	// to the outbound HTTP header it is forwarded as (e.g. "X-Session-Id").
+	// The listed args are declared in each action's InjectContextArgs so the
+	// host injects them, then popped from the tool arguments and set as
+	// per-request headers here — so they reach the downstream server as
+	// headers and never leak into the tool's JSON arguments.
+	ContextHeaders map[string]string `json:"context_headers,omitempty"`
 }
 
 // PluginConfig is the top-level config block passed by the host via the Init

@@ -119,6 +119,17 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			}
 		}
 
+		// Context args this server forwards as headers, declared once per
+		// server: the host injects them into req.Args before Execute, which
+		// then pops them into the configured HTTP header. Sorted so the
+		// serialized ActionMsg is stable across restarts (map order is
+		// randomized), matching schemaToParams' determinism.
+		var injectContextArgs []string
+		for ctxArg := range cfg.ContextHeaders {
+			injectContextArgs = append(injectContextArgs, ctxArg)
+		}
+		sort.Strings(injectContextArgs)
+
 		for _, tool := range tools {
 			actionName := cfg.Server + "__" + tool.Name
 			r.actions[actionName] = entry{
@@ -139,11 +150,12 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 			}
 			params := schemaToParams(tool.InputSchema)
 			r.caps.Actions = append(r.caps.Actions, pluginpkg.ActionMsg{
-				Name:          actionName,
-				Description:   desc,
-				Parameters:    params,
-				ReadOnly:      readOnlyFromAnnotations(tool.Annotations),
-				AlwaysInclude: alwaysIncludeFromMeta(tool.Meta),
+				Name:              actionName,
+				Description:       desc,
+				Parameters:        params,
+				ReadOnly:          readOnlyFromAnnotations(tool.Annotations),
+				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
+				InjectContextArgs: injectContextArgs,
 			})
 		}
 	}
