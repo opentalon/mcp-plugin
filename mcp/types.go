@@ -122,10 +122,18 @@ type ToolAnnotation struct {
 }
 
 // InputSchema is the JSON Schema for a tool's input parameters.
+//
+// Only these three keywords are modelled. A server that factors shared
+// sub-schemas into a tool-level "$defs" therefore loses it: the properties
+// referencing it still travel whole (SchemaProp.Raw), but their "$ref" would
+// have nothing to resolve against on the far side, so the host drops such a
+// property back to its type and description rather than announcing a
+// reference that dangles. No server bridged so far factors its schemas that
+// way; widening this struct is what to do when one does.
 type InputSchema struct {
-	Type       string                    `json:"type"`
-	Properties map[string]SchemaProp     `json:"properties,omitempty"`
-	Required   []string                  `json:"required,omitempty"`
+	Type       string                `json:"type"`
+	Properties map[string]SchemaProp `json:"properties,omitempty"`
+	Required   []string              `json:"required,omitempty"`
 }
 
 // SchemaProp describes one property in an InputSchema.
