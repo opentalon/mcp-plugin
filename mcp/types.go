@@ -129,15 +129,43 @@ type InputSchema struct {
 }
 
 // SchemaProp describes one property in an InputSchema.
+//
+// Type, Nullable and Description are the parts this bridge acts on itself:
+// coercing a flat string argument back to its declared type, and reading the
+// opt-in field list out of a description. Everything else a JSON Schema can
+// say about a property — enum values, array item types, nested shapes,
+// formats, defaults — lives only in Raw, which travels to the host untouched
+// so the model is shown the property the server wrote rather than a summary
+// of it.
 type SchemaProp struct {
-	Type        string `json:"type"`
-	Nullable    bool   `json:"-"` // true when JSON Schema type includes "null"
-	Description string `json:"description,omitempty"`
+	Type        string          `json:"type"`
+	Nullable    bool            `json:"-"` // true when JSON Schema type includes "null"
+	Description string          `json:"description,omitempty"`
+	Raw         json.RawMessage `json:"-"` // verbatim property JSON; re-emitted by MarshalJSON
 }
 
-// UnmarshalJSON handles the JSON Schema spec where "type" may be either a
-// string ("string") or an array of strings (["string", "null"]).
-// When an array is provided, the first non-"null" element is used.
+// MarshalJSON writes the property back exactly as its server wrote it.
+//
+// The offline cache stores whole tools/list results, so without this the
+// round trip through disk would narrow every cached property to type +
+// description: enum values and item types gone, and ["string","null"]
+// flattened to "string". A property built in code rather than parsed from a
+// server carries no Raw and falls back to the struct's own fields.
+//
+// Value receiver on purpose: properties live in a map, whose values are not
+// addressable, so a pointer method would simply never be called.
+func (s SchemaProp) MarshalJSON() ([]byte, error) {
+	if len(s.Raw) > 0 {
+		return s.Raw, nil
+	}
+	type schemaPropAlias SchemaProp // sheds the method set, so no recursion
+	return json.Marshal(schemaPropAlias(s))
+}
+
+// UnmarshalJSON keeps the property verbatim and, on top of that, resolves the
+// JSON Schema spec's two spellings of "type": a string ("string") or an array
+// of strings (["string", "null"]). When an array is provided, the first
+// non-"null" element is used.
 func (s *SchemaProp) UnmarshalJSON(data []byte) error {
 	// Use an alias to avoid infinite recursion.
 	type schemaPropAlias struct {
@@ -148,6 +176,8 @@ func (s *SchemaProp) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &alias); err != nil {
 		return err
 	}
+	// Copy: the decoder's buffer is not ours to hold on to.
+	s.Raw = append(json.RawMessage(nil), data...)
 	s.Description = alias.Description
 	if len(alias.Type) == 0 {
 		return nil
