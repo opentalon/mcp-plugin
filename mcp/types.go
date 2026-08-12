@@ -126,10 +126,16 @@ type ToolAnnotation struct {
 // Only these three keywords are modelled. A server that factors shared
 // sub-schemas into a tool-level "$defs" therefore loses it: the properties
 // referencing it still travel whole (SchemaProp.Raw), but their "$ref" would
-// have nothing to resolve against on the far side, so the host drops such a
-// property back to its type and description rather than announcing a
-// reference that dangles. No server bridged so far factors its schemas that
-// way; widening this struct is what to do when one does.
+// have nothing to resolve against on the far side, so the host refuses such a
+// fragment rather than announcing a reference that dangles.
+//
+// What the model then sees for that one property is a bare
+// {"type": "string", "description": …} — this bridge sends no parameter type
+// of its own, so the host's fallback has nothing but the description to work
+// with. That is exactly what every bridged property looked like before
+// fragments existed, so nothing regresses; it is simply the one property that
+// does not benefit. No server bridged so far factors its schemas that way;
+// widening this struct is what to do when one does.
 type InputSchema struct {
 	Type       string                `json:"type"`
 	Properties map[string]SchemaProp `json:"properties,omitempty"`
