@@ -58,6 +58,71 @@ func TestSchemaProp_UnmarshalJSON(t *testing.T) {
 	}
 }
 
+// TestSchemaProp_RawRoundTrip guards the property JSON on the path it is most
+// easily lost on: the offline cache, which stores whole tools/list results and
+// reads them back when a server is unreachable at startup.
+//
+// Re-serialising a property from the parsed struct alone would narrow it to
+// type + description, so a cached tool would offer the model an enum without
+// values and an array without an item type, and a ["string","null"] union
+// would come back as a plain "string". The property has to go back to disk
+// exactly as it arrived.
+func TestSchemaProp_RawRoundTrip(t *testing.T) {
+	const property = `{"type":["string","null"],"enum":["asset","consumable"],"description":"Which kind"}`
+
+	var prop SchemaProp
+	if err := json.Unmarshal([]byte(property), &prop); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := json.Marshal(prop)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(out) != property {
+		t.Errorf("round trip = %s, want %s", out, property)
+	}
+
+	// Through a whole tool, the way the cache actually stores it — properties
+	// sit in a map, whose values are not addressable, so this also proves the
+	// marshaller is reachable there at all.
+	var tool Tool
+	if err := json.Unmarshal([]byte(`{
+		"name": "list-items",
+		"description": "List items",
+		"inputSchema": {"type":"object","properties":{"kind":`+property+`},"required":["kind"]}
+	}`), &tool); err != nil {
+		t.Fatalf("unmarshal tool: %v", err)
+	}
+	cached, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal tool: %v", err)
+	}
+	var reloaded Tool
+	if err := json.Unmarshal(cached, &reloaded); err != nil {
+		t.Fatalf("reload tool: %v", err)
+	}
+	got := reloaded.InputSchema.Properties["kind"]
+	if string(got.Raw) != property {
+		t.Errorf("cached property = %s, want %s", got.Raw, property)
+	}
+	if got.Type != "string" || !got.Nullable {
+		t.Errorf("cached property type = %q nullable = %v, want string/true", got.Type, got.Nullable)
+	}
+}
+
+// TestSchemaProp_MarshalWithoutRaw covers a property built in code rather than
+// parsed from a server: there is no verbatim JSON to re-emit, so the struct's
+// own fields have to produce it.
+func TestSchemaProp_MarshalWithoutRaw(t *testing.T) {
+	out, err := json.Marshal(SchemaProp{Type: "string", Description: "File path"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if want := `{"type":"string","description":"File path"}`; string(out) != want {
+		t.Errorf("marshal = %s, want %s", out, want)
+	}
+}
+
 func TestRpcError_String(t *testing.T) {
 	cases := []struct {
 		name string

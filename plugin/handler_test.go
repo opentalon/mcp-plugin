@@ -10,56 +10,77 @@ import (
 	pluginpkg "github.com/opentalon/opentalon/pkg/plugin"
 )
 
-func TestMapType(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"string", "string"},
-		{"STRING", "string"},
-		{"number", "number"},
-		{"integer", "number"},
-		{"boolean", "boolean"},
-		{"object", "json"},
-		{"array", "json"},
-		{"unknown", "string"},
-		{"", "string"},
-	}
-	for _, c := range cases {
-		if got := mapType(c.in); got != c.want {
-			t.Errorf("mapType(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 func TestSchemaToParams_empty(t *testing.T) {
 	if got := schemaToParams(mcp.InputSchema{}); got != nil {
 		t.Errorf("want nil for empty schema, got %v", got)
 	}
 }
 
+// TestSchemaToParams pins the whole point of the bridge's parameter handling:
+// each property reaches the host as the server wrote it. An enum is the case
+// that matters — a parameter whose allowed values live only in its enum is a
+// parameter the model has to guess if the bridge reduces the property to a
+// type name on the way past. Name, description and requiredness are still
+// derived here, because the host needs them outside the fragment.
 func TestSchemaToParams(t *testing.T) {
-	schema := mcp.InputSchema{
-		Properties: map[string]mcp.SchemaProp{
-			"path":  {Type: "string", Description: "File path"},
-			"count": {Type: "integer"},
-			"data":  {Type: "object", Description: "Payload"},
+	const (
+		pathProp  = `{"type":"string","description":"File path"}`
+		kindProp  = `{"type":"string","enum":["asset","consumable"],"description":"Which kind"}`
+		tagsProp  = `{"type":"array","items":{"type":"string"}}`
+		countProp = `{"type":["integer","null"]}`
+	)
+	var schema mcp.InputSchema
+	if err := json.Unmarshal([]byte(`{
+		"type": "object",
+		"properties": {
+			"path":  `+pathProp+`,
+			"kind":  `+kindProp+`,
+			"tags":  `+tagsProp+`,
+			"count": `+countProp+`
 		},
-		Required: []string{"path"},
+		"required": ["path"]
+	}`), &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
 	}
+
 	params := schemaToParams(schema)
-	if len(params) != 3 {
-		t.Fatalf("got %d params, want 3", len(params))
+	if len(params) != 4 {
+		t.Fatalf("got %d params, want 4", len(params))
 	}
 	byName := make(map[string]pluginpkg.ParameterMsg)
 	for _, p := range params {
 		byName[p.Name] = p
 	}
-	if p := byName["path"]; p.Type != "string" || !p.Required || p.Description != "File path" {
+
+	if p := byName["path"]; !p.Required || p.Description != "File path" || string(p.Schema) != pathProp {
 		t.Errorf("path param: %+v", p)
 	}
-	if p := byName["count"]; p.Type != "number" || p.Required {
-		t.Errorf("count param: %+v", p)
+	if p := byName["kind"]; p.Required || string(p.Schema) != kindProp {
+		t.Errorf("kind param: %+v — the enum must survive verbatim", p)
 	}
-	if p := byName["data"]; p.Type != "json" || p.Required {
-		t.Errorf("data param: %+v", p)
+	if p := byName["tags"]; string(p.Schema) != tagsProp {
+		t.Errorf("tags param: %+v — the item type must survive verbatim", p)
+	}
+	if p := byName["count"]; string(p.Schema) != countProp {
+		t.Errorf("count param: %+v — the nullable type union must survive verbatim", p)
+	}
+}
+
+// TestSchemaToParams_noRawJSON covers a schema assembled in code rather than
+// parsed from a server: there is no fragment to pass on, so the parameter
+// carries only what the struct holds and the host synthesises the rest.
+func TestSchemaToParams_noRawJSON(t *testing.T) {
+	params := schemaToParams(mcp.InputSchema{
+		Properties: map[string]mcp.SchemaProp{
+			"path": {Type: "string", Description: "File path"},
+		},
+		Required: []string{"path"},
+	})
+	if len(params) != 1 {
+		t.Fatalf("got %d params, want 1", len(params))
+	}
+	if p := params[0]; p.Name != "path" || !p.Required || p.Description != "File path" || len(p.Schema) != 0 {
+		t.Errorf("path param: %+v, want no schema fragment", p)
 	}
 }
 

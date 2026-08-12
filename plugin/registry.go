@@ -229,8 +229,6 @@ func loadCache(cacheDir, server string) []mcp.Tool {
 	return c.Tools
 }
 
-// schemaToParams converts an MCP JSON Schema to OpenTalon ParameterMsg slice.
-// Complex types (object, array) are mapped to type "json" — callers pass a JSON string.
 // readOnlyFromAnnotations projects the upstream MCP `readOnlyHint`
 // annotation onto the boolean the OpenTalon SDK consumes
 // (pluginpkg.ActionMsg.ReadOnly). The orchestrator's per-call
@@ -278,6 +276,18 @@ func alwaysIncludeFromMeta(meta json.RawMessage) bool {
 	return m.AlwaysInclude
 }
 
+// schemaToParams converts an MCP tool's input schema into the parameter list
+// the OpenTalon SDK expects.
+//
+// Each property's own JSON crosses verbatim in Schema, so the model is shown
+// what the server actually declared — enum values, array item types, nested
+// object shapes — instead of a type name standing in for all of it. That
+// makes this the single place a property's shape is derived; nothing here
+// reduces it to a type of our own choosing a second time.
+//
+// A property with no raw JSON behind it (a schema built in code rather than
+// parsed from a server) carries only its name, description and requiredness,
+// and the host synthesises a fragment for it.
 func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 	if len(schema.Properties) == 0 {
 		return nil
@@ -290,11 +300,10 @@ func schemaToParams(schema mcp.InputSchema) []pluginpkg.ParameterMsg {
 
 	params := make([]pluginpkg.ParameterMsg, 0, len(schema.Properties))
 	for name, prop := range schema.Properties {
-		t := mapType(prop.Type)
 		params = append(params, pluginpkg.ParameterMsg{
 			Name:        name,
 			Description: prop.Description,
-			Type:        t,
+			Schema:      prop.Raw,
 			Required:    required[name],
 		})
 	}
@@ -483,20 +492,5 @@ func (r *Registry) Close() {
 			seen[e.client] = true
 			e.client.Close()
 		}
-	}
-}
-
-func mapType(schemaType string) string {
-	switch strings.ToLower(schemaType) {
-	case "string":
-		return "string"
-	case "number", "integer":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "object", "array":
-		return "json"
-	default:
-		return "string"
 	}
 }
