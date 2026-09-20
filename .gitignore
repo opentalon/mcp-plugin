@@ -5,6 +5,7 @@
 *.so
 *.dylib
 opentalon-mcp
+/plugin/mcp-plugin
 
 # Test binary
 *.test
