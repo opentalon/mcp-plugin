@@ -156,6 +156,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) *Registry {
 				Parameters:        params,
 				ReadOnly:          readOnlyFromAnnotations(tool.Annotations),
 				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
+				ConfirmationHint:  confirmationHintFromMeta(tool.Meta),
 				InjectContextArgs: injectContextArgs,
 			})
 		}
@@ -275,6 +276,28 @@ func alwaysIncludeFromMeta(meta json.RawMessage) bool {
 		return false
 	}
 	return m.AlwaysInclude
+}
+
+// confirmationHintFromMeta projects an MCP server's `_meta.confirmation_hint`
+// onto the action's ConfirmationHint: the server's own instruction for how the
+// host words the confirmation question before this tool runs, for tools whose
+// arguments are not what the user decides on (a guided demonstration, a
+// report). The host narrates under that instruction instead of its general
+// field-by-field rules.
+//
+// A missing, empty or malformed `_meta`, or a hint that is not a string, leaves
+// the action without a hint, and the host's general rules apply as before.
+func confirmationHintFromMeta(meta json.RawMessage) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	var m struct {
+		ConfirmationHint string `json:"confirmation_hint"`
+	}
+	if err := json.Unmarshal(meta, &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.ConfirmationHint)
 }
 
 // schemaToParams converts an MCP tool's input schema into the parameter list
