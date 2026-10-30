@@ -84,34 +84,15 @@ func (c *Client) tryStreamableHTTP(ctx context.Context) error {
 	log.Printf("mcp-plugin: server %s: initialize via StreamableHTTP (before roundTrip)", c.cfg.Server)
 	st := newStreamableHTTP(ctx, c.httpClient, c.cfg.URL, c.cfg.Server)
 
-	id := c.nextID()
-	initReq := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "initialize",
-		Params: initializeParams{
-			ProtocolVersion: protocolVersion,
-			Capabilities:    map[string]interface{}{},
-			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
-		},
-	}
-
-	resp, err := st.roundTrip(initReq, 15*time.Second, nil)
+	resp, err := c.sendInitialize(st)
 	if err != nil {
 		st.close()
 		return err
 	}
-	if resp.Error != nil {
+	if err := c.finishInitialize(st, resp); err != nil {
 		st.close()
-		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error)
+		return err
 	}
-	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
-
-	// Send notifications/initialized (fire-and-forget).
-	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
-	_ = st.notify(notif)
-
-	c.tp = st
 	log.Printf("mcp-plugin: server %s: connected via Streamable HTTP (after initialize + notifications/initialized)", c.cfg.Server)
 	return nil
 }
@@ -130,6 +111,23 @@ func (c *Client) connectSSE(ctx context.Context) error {
 
 	// MCP initialize.
 	log.Printf("mcp-plugin: server %s: SSE initialize (before roundTrip)", c.cfg.Server)
+	resp, err := c.sendInitialize(tp)
+	if err != nil {
+		tp.close()
+		return fmt.Errorf("server %s: initialize: %w", c.cfg.Server, err)
+	}
+	if err := c.finishInitialize(tp, resp); err != nil {
+		tp.close()
+		return err
+	}
+	log.Printf("mcp-plugin: server %s: connected via SSE (after initialize + notifications/initialized)", c.cfg.Server)
+	return nil
+}
+
+// sendInitialize sends the MCP initialize request over tp and returns the
+// round-trip error as is. The caller decides how to report it: the Streamable
+// HTTP path returns it unchanged, the SSE path prefixes the server name.
+func (c *Client) sendInitialize(tp transport) (rpcResponse, error) {
 	id := c.nextID()
 	initReq := rpcRequest{
 		JSONRPC: "2.0",
@@ -141,24 +139,21 @@ func (c *Client) connectSSE(ctx context.Context) error {
 			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
 		},
 	}
+	return tp.roundTrip(initReq, 15*time.Second, nil)
+}
 
-	resp, err := tp.roundTrip(initReq, 15*time.Second, nil)
-	if err != nil {
-		tp.close()
-		return fmt.Errorf("server %s: initialize: %w", c.cfg.Server, err)
-	}
+// finishInitialize completes the handshake on an initialize response: it fails
+// on an error the server reported, otherwise keeps the server's instructions,
+// glossary and knowledge articles, sends notifications/initialized
+// (fire-and-forget) and makes tp the client's transport. The caller closes tp
+// on error.
+func (c *Client) finishInitialize(tp transport, resp rpcResponse) error {
 	if resp.Error != nil {
-		tp.close()
 		return fmt.Errorf("server %s: initialize: %s", c.cfg.Server, resp.Error)
 	}
 	c.instructions, c.glossary, c.knowledgeArticles = decodeInitResult(c.cfg.Server, resp.Result)
-
-	// Send notifications/initialized (fire-and-forget).
-	notif := rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"}
-	_ = tp.notify(notif)
-
+	_ = tp.notify(rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"})
 	c.tp = tp
-	log.Printf("mcp-plugin: server %s: connected via SSE (after initialize + notifications/initialized)", c.cfg.Server)
 	return nil
 }
 
@@ -331,15 +326,13 @@ func (c *Client) FallbackSSE(ctx context.Context) error {
 }
 
 // Close shuts down the transport (cancels SSE readLoop, etc.).
-// Safe to call on a nil or not-yet-connected client.
+// Safe to call on a client that is not connected; the client itself must not
+// be nil.
 func (c *Client) Close() {
 	if c.tp != nil {
 		c.tp.close()
 	}
 }
-
-// ServerName returns the configured server name.
-func (c *Client) ServerName() string { return c.cfg.Server }
 
 // IsAlive reports whether the client has an active transport connection.
 func (c *Client) IsAlive() bool {

@@ -1,4 +1,5 @@
-// Package mcp implements the MCP HTTP+SSE client protocol.
+// Package mcp implements an MCP client over Streamable HTTP, with a fallback
+// to the legacy HTTP+SSE transport.
 package mcp
 
 import "encoding/json"

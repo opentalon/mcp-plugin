@@ -27,8 +27,7 @@ type ServerConfig struct {
 // PluginConfig is the top-level config block passed by the host via the Init
 // RPC. It mirrors the `config:` section of the plugin entry in config.yaml.
 type PluginConfig struct {
-	Servers  []ServerConfig `json:"servers"`
-	CacheDir string         `json:"cache_dir,omitempty"`
+	Servers []ServerConfig `json:"servers"`
 }
 
 var envRe = regexp.MustCompile(`\{\{env\.(\w+)\}\}`)
@@ -40,11 +39,7 @@ func Parse(configJSON string) (*PluginConfig, error) {
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	for i := range cfg.Servers {
-		for k, v := range cfg.Servers[i].Headers {
-			cfg.Servers[i].Headers[k] = expandEnv(v)
-		}
-	}
+	expandHeaders(cfg.Servers)
 	return &cfg, nil
 }
 
@@ -59,11 +54,7 @@ func Load() ([]ServerConfig, error) {
 	if err := json.Unmarshal([]byte(raw), &cfgs); err != nil {
 		return nil, fmt.Errorf("parse OPENTALON_MCP_SERVERS: %w", err)
 	}
-	for i := range cfgs {
-		for k, v := range cfgs[i].Headers {
-			cfgs[i].Headers[k] = expandEnv(v)
-		}
-	}
+	expandHeaders(cfgs)
 	return cfgs, nil
 }
 
@@ -71,6 +62,16 @@ func Load() ([]ServerConfig, error) {
 // Returns "" if not set.
 func CacheDir() string {
 	return os.Getenv("OPENTALON_MCP_CACHE_DIR")
+}
+
+// expandHeaders expands {{env.X}} templates in every server's header values,
+// in place.
+func expandHeaders(cfgs []ServerConfig) {
+	for i := range cfgs {
+		for k, v := range cfgs[i].Headers {
+			cfgs[i].Headers[k] = expandEnv(v)
+		}
+	}
 }
 
 func expandEnv(s string) string {

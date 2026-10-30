@@ -45,8 +45,9 @@ type cachedServer struct {
 // Build connects to all configured MCP servers, lists their tools, and
 // builds the tool registry and capabilities message.
 // If a server is unreachable and a cache exists, the cached spec is used
-// so the LLM still knows what tools are available.
-func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
+// so the LLM still knows what tools are available; without a cache the server
+// is skipped and recorded as failed.
+func Build(ctx context.Context, cfgs []config.ServerConfig) *Registry {
 	log.Printf("mcp-plugin: Build begin servers=%d", len(cfgs))
 	cacheDir := config.CacheDir()
 
@@ -167,7 +168,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 
 	log.Printf("mcp-plugin: Build done actions=%d sysprompt_bytes=%d glossary_entries=%d knowledge_articles=%d",
 		len(r.actions), len(r.caps.SystemPromptAddition), len(r.caps.Glossary), len(r.caps.KnowledgeArticles))
-	return r, nil
+	return r
 }
 
 // fetchTools connects to one MCP server and returns its tool list plus the live client.

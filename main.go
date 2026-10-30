@@ -34,10 +34,7 @@ func main() {
 			log.Fatalf("mcp-plugin: no MCP server configs found in OPENTALON_MCP_SERVERS")
 		}
 		log.Printf("mcp-plugin: bootstrap Build with %d server(s) (before)", len(cfgs))
-		registry, err := mcpplugin.Build(ctx, cfgs)
-		if err != nil {
-			log.Fatalf("mcp-plugin: build registry: %v", err)
-		}
+		registry := mcpplugin.Build(ctx, cfgs)
 		handler.SetRegistry(registry, cfgs)
 		log.Printf("mcp-plugin: init done (env bootstrap): registry ready from %d server config(s); host Init/Configure may still run", len(cfgs))
 	}
