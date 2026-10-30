@@ -100,10 +100,7 @@ func TestBuild_populatesRegistry(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config.ServerConfig{Server: "testsrv", URL: srv.URL + "/sse"}
 
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 
 	if _, ok := r.actions["testsrv__do_thing"]; !ok {
 		t.Errorf("expected action testsrv__do_thing in registry, got %v", keys(r.actions))
@@ -169,13 +166,10 @@ func TestBuild_forwardsServerInstructionsToSystemPromptAddition(t *testing.T) {
 	otherSrv := fakeMCPHTTPServerWithInstructions(t, "do_thing", otherProse)
 	ctx := testCtx(t)
 
-	r, err := Build(ctx, []config.ServerConfig{
+	r := Build(ctx, []config.ServerConfig{
 		{Server: "timly", URL: timlySrv.URL + "/mcp"},
 		{Server: "other", URL: otherSrv.URL + "/mcp"},
 	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
 
 	got := r.caps.SystemPromptAddition
 	for _, want := range []string{"## timly", timlyProse, "## other", otherProse} {
@@ -189,10 +183,7 @@ func TestBuild_emptySystemPromptAdditionWhenNoInstructions(t *testing.T) {
 	srv := fakeMCPHTTPServerWithInstructions(t, "do_thing", "") // no instructions
 	ctx := testCtx(t)
 
-	r, err := Build(ctx, []config.ServerConfig{{Server: "noprose", URL: srv.URL + "/mcp"}})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{{Server: "noprose", URL: srv.URL + "/mcp"}})
 	if r.caps.SystemPromptAddition != "" {
 		t.Errorf("SystemPromptAddition = %q, want empty", r.caps.SystemPromptAddition)
 	}
@@ -252,10 +243,7 @@ func TestBuild_forwardsKnowledgeArticlesWithServerPrefixedIDs(t *testing.T) {
 	srv := fakeMCPHTTPServerWithKnowledgeArticles(t, "list_items", articles)
 	ctx := testCtx(t)
 
-	r, err := Build(ctx, []config.ServerConfig{{Server: "timly", URL: srv.URL + "/mcp"}})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{{Server: "timly", URL: srv.URL + "/mcp"}})
 
 	if len(r.caps.KnowledgeArticles) != 2 {
 		t.Fatalf("KnowledgeArticles len = %d, want 2 (incomplete must be filtered): %#v", len(r.caps.KnowledgeArticles), r.caps.KnowledgeArticles)
@@ -287,10 +275,7 @@ func TestBuild_noKnowledgeArticlesWhenServerOmits(t *testing.T) {
 	srv := fakeMCPHTTPServerWithInstructions(t, "do_thing", "Some prose.")
 	ctx := testCtx(t)
 
-	r, err := Build(ctx, []config.ServerConfig{{Server: "legacy", URL: srv.URL + "/mcp"}})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{{Server: "legacy", URL: srv.URL + "/mcp"}})
 	if len(r.caps.KnowledgeArticles) != 0 {
 		t.Errorf("KnowledgeArticles len = %d, want 0", len(r.caps.KnowledgeArticles))
 	}
@@ -303,10 +288,7 @@ func TestBuild_usesServerKeyInActionName(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config.ServerConfig{Server: "appsignal", URL: srv.URL + "/sse"}
 
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 
 	if _, ok := r.actions["appsignal__get_info"]; !ok {
 		t.Errorf("expected action appsignal__get_info, got %v", keys(r.actions))
@@ -324,10 +306,7 @@ func TestBuild_fallsBackToCacheOnConnectFailure(t *testing.T) {
 	})
 
 	cfg := config.ServerConfig{Server: "offline-srv", URL: "http://127.0.0.1:0/sse"}
-	r, err := Build(context.Background(), []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(context.Background(), []config.ServerConfig{cfg})
 
 	if _, ok := r.actions["offline-srv__cached_tool"]; !ok {
 		t.Errorf("expected cached_tool in registry, got %v", keys(r.actions))
@@ -342,10 +321,7 @@ func TestBuild_emptyServerNameProducesDoubleUnderscorePrefix(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config.ServerConfig{Server: "", URL: srv.URL + "/sse"}
 
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 
 	if _, ok := r.actions["__my_tool"]; !ok {
 		t.Errorf("expected __my_tool when server name is empty, got %v", keys(r.actions))
@@ -359,10 +335,7 @@ func TestBuild_tracksFailedServerNoCache(t *testing.T) {
 	t.Setenv("OPENTALON_MCP_CACHE_DIR", "")
 	cfg := config.ServerConfig{Server: "gone", URL: "http://127.0.0.1:0/sse"}
 
-	r, err := Build(context.Background(), []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(context.Background(), []config.ServerConfig{cfg})
 	if len(r.failedServers) != 1 || r.failedServers[0].Server != "gone" {
 		t.Errorf("failedServers = %v, want [{gone ...}]", r.failedServers)
 	}
@@ -379,10 +352,7 @@ func TestBuild_doesNotTrackOfflineWithCache(t *testing.T) {
 	_ = saveCache(cacheDir, "cached-srv", []mcp.Tool{{Name: "my_tool", Description: "cached"}})
 
 	cfg := config.ServerConfig{Server: "cached-srv", URL: "http://127.0.0.1:0/sse"}
-	r, err := Build(context.Background(), []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(context.Background(), []config.ServerConfig{cfg})
 	if len(r.failedServers) != 0 {
 		t.Errorf("failedServers should be empty when cache is available, got %v", r.failedServers)
 	}
@@ -399,10 +369,7 @@ func TestBuild_tracksOfflineServersWithCache(t *testing.T) {
 	_ = saveCache(cacheDir, "cached-srv", []mcp.Tool{{Name: "my_tool", Description: "cached"}})
 
 	cfg := config.ServerConfig{Server: "cached-srv", URL: "http://127.0.0.1:0/sse"}
-	r, err := Build(context.Background(), []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(context.Background(), []config.ServerConfig{cfg})
 	if len(r.offlineServers) != 1 || r.offlineServers[0].Server != "cached-srv" {
 		t.Errorf("offlineServers = %v, want [{cached-srv ...}]", r.offlineServers)
 	}
@@ -580,10 +547,7 @@ func TestBuild_propagatesReadOnlyHintToActionMsg(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
 
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 
 	byName := make(map[string]bool, len(r.caps.Actions))
 	for _, a := range r.caps.Actions {
@@ -673,10 +637,7 @@ func TestBuild_propagatesAlwaysIncludeMetaToActionMsg(t *testing.T) {
 	ctx := testCtx(t)
 	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
 
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 
 	byName := make(map[string]bool, len(r.caps.Actions))
 	for _, a := range r.caps.Actions {
