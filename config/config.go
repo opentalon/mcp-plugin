@@ -27,8 +27,7 @@ type ServerConfig struct {
 // PluginConfig is the top-level config block passed by the host via the Init
 // RPC. It mirrors the `config:` section of the plugin entry in config.yaml.
 type PluginConfig struct {
-	Servers  []ServerConfig `json:"servers"`
-	CacheDir string         `json:"cache_dir,omitempty"`
+	Servers []ServerConfig `json:"servers"`
 }
 
 var envRe = regexp.MustCompile(`\{\{env\.(\w+)\}\}`)
