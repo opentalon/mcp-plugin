@@ -590,6 +590,28 @@ func TestAlwaysIncludeFromMeta(t *testing.T) {
 	}
 }
 
+func TestConfirmationHintFromMeta(t *testing.T) {
+	cases := []struct {
+		name string
+		meta json.RawMessage
+		want string
+	}{
+		{"nil meta", nil, ""},
+		{"empty object", json.RawMessage(`{}`), ""},
+		{"hint", json.RawMessage(`{"confirmation_hint":" Ask in one sentence. "}`), "Ask in one sentence."},
+		{"hint among others", json.RawMessage(`{"always_include":true,"confirmation_hint":"Ask."}`), "Ask."},
+		{"not a string", json.RawMessage(`{"confirmation_hint":true}`), ""},
+		{"malformed json", json.RawMessage(`{not json`), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := confirmationHintFromMeta(tc.meta); got != tc.want {
+				t.Errorf("confirmationHintFromMeta(%s) = %q, want %q", string(tc.meta), got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompanionsFromMeta(t *testing.T) {
 	cases := []struct {
 		name string
