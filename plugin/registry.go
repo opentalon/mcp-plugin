@@ -155,6 +155,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) (*Registry, error) {
 				Parameters:        params,
 				ReadOnly:          readOnlyFromAnnotations(tool.Annotations),
 				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
+				Companions:        companionsFromMeta(cfg.Server, tool.Meta),
 				InjectContextArgs: injectContextArgs,
 			})
 		}
@@ -274,6 +275,34 @@ func alwaysIncludeFromMeta(meta json.RawMessage) bool {
 		return false
 	}
 	return m.AlwaysInclude
+}
+
+// companionsFromMeta projects an MCP server's `_meta.companions` list onto
+// pluginpkg.ActionMsg.Companions: the tools the host loads together with this
+// one, typically the lookups that supply its parameter values. Each name is
+// bridged the way Build names actions ("<server>__<tool>"), so it names an
+// action of this plugin.
+//
+// A missing or empty list yields none, and so does one that is not entirely
+// non-empty strings: the tool then loads alone, as it did before companions.
+func companionsFromMeta(server string, meta json.RawMessage) []string {
+	if len(meta) == 0 {
+		return nil
+	}
+	var m struct {
+		Companions []string `json:"companions"`
+	}
+	if err := json.Unmarshal(meta, &m); err != nil || len(m.Companions) == 0 {
+		return nil
+	}
+	names := make([]string, len(m.Companions))
+	for i, name := range m.Companions {
+		if name == "" {
+			return nil
+		}
+		names[i] = server + "__" + name
+	}
+	return names
 }
 
 // schemaToParams converts an MCP tool's input schema into the parameter list

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -625,8 +626,38 @@ func TestAlwaysIncludeFromMeta(t *testing.T) {
 	}
 }
 
-// fakeMCPHTTPServerWithMetaTools serves three tools: one pinned via
-// _meta.always_include=true, one explicitly false, and one without _meta.
+func TestCompanionsFromMeta(t *testing.T) {
+	cases := []struct {
+		name string
+		meta json.RawMessage
+		want []string
+	}{
+		{"nil meta", nil, nil},
+		{"empty meta", json.RawMessage(``), nil},
+		{"other keys only", json.RawMessage(`{"always_include":true}`), nil},
+		{"null list", json.RawMessage(`{"companions":null}`), nil},
+		{"empty list", json.RawMessage(`{"companions":[]}`), nil},
+		{"names", json.RawMessage(`{"companions":["list_units","list_categories"]}`), []string{"srv__list_units", "srv__list_categories"}},
+		{"names among other keys", json.RawMessage(`{"x":1,"companions":["list_units"]}`), []string{"srv__list_units"}},
+		{"malformed json", json.RawMessage(`{not json`), nil},
+		{"not a list", json.RawMessage(`{"companions":"list_units"}`), nil},
+		{"number entry", json.RawMessage(`{"companions":["list_units",7]}`), nil},
+		{"object entry", json.RawMessage(`{"companions":[{"name":"list_units"}]}`), nil},
+		{"null entry", json.RawMessage(`{"companions":["list_units",null]}`), nil},
+		{"empty name", json.RawMessage(`{"companions":["list_units",""]}`), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := companionsFromMeta("srv", tc.meta); !slices.Equal(got, tc.want) {
+				t.Errorf("companionsFromMeta(%s) = %q, want %q", string(tc.meta), got, tc.want)
+			}
+		})
+	}
+}
+
+// fakeMCPHTTPServerWithMetaTools serves four tools: one pinned via
+// _meta.always_include=true, one explicitly false, one without _meta, and one
+// naming two of the others in _meta.companions.
 func fakeMCPHTTPServerWithMetaTools(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -651,7 +682,8 @@ func fakeMCPHTTPServerWithMetaTools(t *testing.T) *httptest.Server {
 			result = json.RawMessage(`{"tools":[
 				{"name":"list_items","description":"Pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":true}},
 				{"name":"show_item","description":"Not pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":false}},
-				{"name":"no_meta","description":"No meta","inputSchema":{"type":"object","properties":{}}}
+				{"name":"no_meta","description":"No meta","inputSchema":{"type":"object","properties":{}}},
+				{"name":"update_item","description":"With companions","inputSchema":{"type":"object","properties":{}},"_meta":{"companions":["list_items","show_item"]}}
 			]}`)
 		default:
 			result = json.RawMessage(`{}`)
@@ -691,5 +723,61 @@ func TestBuild_propagatesAlwaysIncludeMetaToActionMsg(t *testing.T) {
 	}
 	if got := byName["srv__no_meta"]; got != false {
 		t.Errorf("srv__no_meta AlwaysInclude = %v, want false (no _meta = conservative default)", got)
+	}
+}
+
+func TestBuild_propagatesCompanionsMetaToActionMsg(t *testing.T) {
+	srv := fakeMCPHTTPServerWithMetaTools(t)
+	ctx := testCtx(t)
+	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
+
+	r, err := Build(ctx, []config.ServerConfig{cfg})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	assertCompanions(t, r, map[string][]string{
+		"srv__update_item": {"srv__list_items", "srv__show_item"},
+		"srv__list_items":  nil,
+		"srv__no_meta":     nil,
+	})
+}
+
+// The offline cache stores the raw tools/list, so a server that goes offline
+// after one live Build still hands its companions on from the cache.
+func TestBuild_keepsCompanionsWhenServingFromCache(t *testing.T) {
+	t.Setenv("OPENTALON_MCP_CACHE_DIR", t.TempDir())
+	srv := fakeMCPHTTPServerWithMetaTools(t)
+	if _, err := Build(testCtx(t), []config.ServerConfig{{Server: "srv", URL: srv.URL + "/mcp"}}); err != nil {
+		t.Fatalf("live Build: %v", err)
+	}
+
+	r, err := Build(context.Background(), []config.ServerConfig{{Server: "srv", URL: "http://127.0.0.1:0/mcp"}})
+	if err != nil {
+		t.Fatalf("offline Build: %v", err)
+	}
+	if len(r.offlineServers) != 1 {
+		t.Fatalf("offlineServers = %v, want the server served from cache", r.offlineServers)
+	}
+	assertCompanions(t, r, map[string][]string{
+		"srv__update_item": {"srv__list_items", "srv__show_item"},
+		"srv__no_meta":     nil,
+	})
+}
+
+func assertCompanions(t *testing.T, r *Registry, want map[string][]string) {
+	t.Helper()
+	got := make(map[string][]string, len(r.caps.Actions))
+	for _, a := range r.caps.Actions {
+		got[a.Name] = a.Companions
+	}
+	for name, w := range want {
+		g, ok := got[name]
+		if !ok {
+			t.Errorf("no action %s, got %v", name, keys(r.actions))
+			continue
+		}
+		if !slices.Equal(g, w) {
+			t.Errorf("%s Companions = %q, want %q", name, g, w)
+		}
 	}
 }
