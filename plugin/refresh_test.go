@@ -80,10 +80,7 @@ func TestHandler_RefreshCapabilities_picksUpUpstreamChange(t *testing.T) {
 	ctx := testCtx(t)
 	cfgs := []config.ServerConfig{{Server: "s", URL: srv.URL + "/mcp"}}
 
-	reg, err := Build(ctx, cfgs)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	reg := Build(ctx, cfgs)
 	h := NewHandler(ctx)
 	h.SetRegistry(reg, cfgs)
 
@@ -122,10 +119,7 @@ func TestHandler_RefreshCapabilities_keepsPreviousOnDegradedUpstream(t *testing.
 	ctx := testCtx(t)
 	cfgs := []config.ServerConfig{{Server: "s", URL: srv.URL + "/mcp"}}
 
-	reg, err := Build(ctx, cfgs)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	reg := Build(ctx, cfgs)
 	h := NewHandler(ctx)
 	h.SetRegistry(reg, cfgs)
 	if !capsHasAction(h.Capabilities(), "s__old") {
@@ -179,10 +173,7 @@ func TestHandler_RefreshCapabilities_coalescesWhenAlreadyRefreshing(t *testing.T
 	ctx := testCtx(t)
 	cfgs := []config.ServerConfig{{Server: "s", URL: srv.URL + "/mcp"}}
 
-	reg, err := Build(ctx, cfgs)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	reg := Build(ctx, cfgs)
 	h := NewHandler(ctx)
 	h.SetRegistry(reg, cfgs)
 

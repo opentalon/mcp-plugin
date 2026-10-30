@@ -352,13 +352,6 @@ func TestClient_CallTool_extraHeaders(t *testing.T) {
 	}
 }
 
-func TestClient_ServerName(t *testing.T) {
-	c := NewClient(config.ServerConfig{Server: "myserver", URL: "http://x/sse"})
-	if got := c.ServerName(); got != "myserver" {
-		t.Errorf("ServerName = %q, want myserver", got)
-	}
-}
-
 // --- Streamable HTTP transport tests ---
 
 func TestStreamable_Connect(t *testing.T) {

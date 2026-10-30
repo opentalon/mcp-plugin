@@ -85,7 +85,7 @@ func (s *sseTransport) post(req rpcRequest, extraHeaders http.Header) error {
 }
 
 func (s *sseTransport) context() context.Context { return s.conn.ctx }
-func (s *sseTransport) close()                    { s.conn.cancel() }
+func (s *sseTransport) close()                   { s.conn.cancel() }
 
 // sseConn manages a persistent SSE connection to an MCP server.
 // It reads events from the stream and dispatches JSON-RPC responses
@@ -94,9 +94,8 @@ type sseConn struct {
 	mu      sync.Mutex
 	pending map[int64]chan rpcResponse
 
-	endpointCh chan string // closed after endpoint is received once
-	endpointOnce sync.Once
-	endpoint   string
+	endpointCh   chan string // buffered; receives the first endpoint event only
+	endpointOnce sync.Once   // guards the single send on endpointCh
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -231,7 +230,6 @@ func (s *sseConn) handleEvent(eventType, data, sseURL string) {
 	case "endpoint":
 		endpoint := resolveEndpoint(sseURL, strings.TrimSpace(data))
 		s.endpointOnce.Do(func() {
-			s.endpoint = endpoint
 			s.endpointCh <- endpoint
 		})
 	case "", "message":

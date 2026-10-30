@@ -75,10 +75,7 @@ func TestBuild_populatesInjectContextArgsFromContextHeaders(t *testing.T) {
 	// sorted result from a lucky draw. Loop so that removing sort.Strings
 	// would fail this test deterministically, not ~1-in-N.
 	for i := 0; i < 40; i++ {
-		r, err := Build(ctx, []config.ServerConfig{cfg})
-		if err != nil {
-			t.Fatalf("Build: %v", err)
-		}
+		r := Build(ctx, []config.ServerConfig{cfg})
 		if len(r.caps.Actions) == 0 {
 			t.Fatal("no actions built")
 		}
@@ -92,10 +89,7 @@ func TestBuild_populatesInjectContextArgsFromContextHeaders(t *testing.T) {
 
 	// Backward compatible: no context_headers -> no injected args.
 	cfg2 := config.ServerConfig{Server: "srv2", URL: srv.URL + "/mcp"}
-	r2, err := Build(ctx, []config.ServerConfig{cfg2})
-	if err != nil {
-		t.Fatalf("Build (no context_headers): %v", err)
-	}
+	r2 := Build(ctx, []config.ServerConfig{cfg2})
 	for _, act := range r2.caps.Actions {
 		if len(act.InjectContextArgs) != 0 {
 			t.Errorf("%s InjectContextArgs = %v, want empty", act.Name, act.InjectContextArgs)
@@ -113,10 +107,7 @@ func TestHandler_Execute_forwardsContextArgAsHeaderAndStripsArg(t *testing.T) {
 		Server: "srv", URL: srv.URL + "/mcp",
 		ContextHeaders: map[string]string{"session_id": "X-Session-Id"},
 	}
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 	h := NewHandler(ctx)
 	h.SetRegistry(r, nil)
 
@@ -152,10 +143,7 @@ func TestHandler_Execute_forwardsMultipleContextArgsAndStripsThem(t *testing.T) 
 		Server: "srv", URL: srv.URL + "/mcp",
 		ContextHeaders: map[string]string{"session_id": "X-Session-Id", "actor_id": "X-Actor-Id"},
 	}
-	r, err := Build(ctx, []config.ServerConfig{cfg})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	r := Build(ctx, []config.ServerConfig{cfg})
 	h := NewHandler(ctx)
 	h.SetRegistry(r, nil)
 

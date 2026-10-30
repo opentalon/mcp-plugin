@@ -72,11 +72,7 @@ func (h *Handler) Configure(configJSON string) error {
 		return fmt.Errorf("mcp-plugin: no servers in config")
 	}
 	log.Printf("mcp-plugin: Configure parsed servers=%d (before Build)", len(cfg.Servers))
-	registry, err := Build(h.ctx, cfg.Servers)
-	if err != nil {
-		log.Printf("mcp-plugin: Configure Build err: %v", err)
-		return err
-	}
+	registry := Build(h.ctx, cfg.Servers)
 	h.mu.Lock()
 	old := h.registry
 	h.registry = registry
@@ -115,8 +111,9 @@ func (h *Handler) Capabilities() pluginpkg.CapabilitiesMsg {
 //
 // Concurrent calls are coalesced via the refreshing flag: a call that finds a
 // refresh already in flight returns the current capabilities instead of
-// starting a second Build. On a build failure the previous capabilities are
-// kept and returned — a transient upstream outage never empties the set.
+// starting a second Build. When any server is offline or unreachable during
+// the rebuild, the previous capabilities are kept and returned — a transient
+// upstream outage never empties the set.
 func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
 	h.mu.Lock()
 	if h.refreshing || h.registry == nil || len(h.serverCfgs) == 0 {
@@ -142,15 +139,9 @@ func (h *Handler) RefreshCapabilities() pluginpkg.CapabilitiesMsg {
 	}()
 
 	log.Printf("mcp-plugin: refresh: re-fetching capabilities from %d server(s)", len(cfgs))
-	newReg, err := Build(h.ctx, cfgs)
+	newReg := Build(h.ctx, cfgs)
 
 	h.mu.Lock()
-	if err != nil {
-		reg := h.registry
-		h.mu.Unlock()
-		log.Printf("mcp-plugin: refresh: build failed, keeping previous capabilities: %v", err)
-		return reg.capsSnapshot()
-	}
 	// Don't swap to a degraded build. If any server fell back to its cache
 	// (offline) or had no cache at all (failed), this refresh didn't get a fully
 	// live view — swapping would push [offline]-prefixed / stale descriptions to

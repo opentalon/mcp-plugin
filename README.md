@@ -6,7 +6,7 @@ An [OpenTalon](https://github.com/opentalon/opentalon) plugin that bridges MCP (
 
 ## Overview
 
-`mcp-plugin` connects to one or more MCP servers over HTTP+SSE and registers their tools dynamically with OpenTalon. It runs as a plugin subprocess, communicating with the host via Unix socket or TCP gRPC.
+`mcp-plugin` connects to one or more MCP servers over Streamable HTTP, falling back to the legacy HTTP+SSE transport for servers that do not speak it, and registers their tools dynamically with OpenTalon. It runs as a plugin subprocess, communicating with the host via Unix socket or TCP gRPC.
 
 Tools from each server are namespaced as `<server>__<tool>` (e.g. `filesystem__read_file`).
 
