@@ -125,7 +125,8 @@ func (c *Client) connectSSE(ctx context.Context) error {
 }
 
 // sendInitialize sends the MCP initialize request over tp and returns the
-// round-trip error as is; each transport wraps it its own way.
+// round-trip error as is. The caller decides how to report it: the Streamable
+// HTTP path returns it unchanged, the SSE path prefixes the server name.
 func (c *Client) sendInitialize(tp transport) (rpcResponse, error) {
 	id := c.nextID()
 	initReq := rpcRequest{
