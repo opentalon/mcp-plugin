@@ -325,7 +325,8 @@ func (c *Client) FallbackSSE(ctx context.Context) error {
 }
 
 // Close shuts down the transport (cancels SSE readLoop, etc.).
-// Safe to call on a nil or not-yet-connected client.
+// Safe to call on a client that is not connected; the client itself must not
+// be nil.
 func (c *Client) Close() {
 	if c.tp != nil {
 		c.tp.close()

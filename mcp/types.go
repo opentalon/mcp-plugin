@@ -1,4 +1,5 @@
-// Package mcp implements the MCP HTTP+SSE client protocol.
+// Package mcp implements an MCP client over Streamable HTTP, with a fallback
+// to the legacy HTTP+SSE transport.
 package mcp
 
 import "encoding/json"
@@ -20,8 +21,8 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 	// Data carries the server-provided detail behind a generic Message. The
 	// JSON-RPC 2.0 spec keeps the top-level Message short and stable (e.g.
 	// "Invalid params") and puts the actual reason ("Missing required
@@ -75,9 +76,9 @@ type clientInfo struct {
 // Other fields (protocolVersion, capabilities, serverInfo) are intentionally
 // omitted; we don't currently read them.
 type initializeResult struct {
-	Instructions      string                  `json:"instructions"`
-	Glossary          []InitGlossaryEntry     `json:"glossary,omitempty"`
-	KnowledgeArticles []InitKnowledgeArticle  `json:"knowledge_articles,omitempty"`
+	Instructions      string                 `json:"instructions"`
+	Glossary          []InitGlossaryEntry    `json:"glossary,omitempty"`
+	KnowledgeArticles []InitKnowledgeArticle `json:"knowledge_articles,omitempty"`
 }
 
 // InitGlossaryEntry is a term/definition pair from an MCP server's initialize response.
@@ -107,18 +108,18 @@ type Tool struct {
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
 	InputSchema  InputSchema     `json:"inputSchema"`
-	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`  // optional JSON Schema for structured output
-	Annotations  *ToolAnnotation `json:"annotations,omitempty"`   // optional MCP tool annotations
-	Meta         json.RawMessage `json:"_meta,omitempty"`         // optional MCP `_meta` extension bag (e.g. an always_include tier pin)
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"` // optional JSON Schema for structured output
+	Annotations  *ToolAnnotation `json:"annotations,omitempty"`  // optional MCP tool annotations
+	Meta         json.RawMessage `json:"_meta,omitempty"`        // optional MCP `_meta` extension bag (e.g. an always_include tier pin)
 }
 
 // ToolAnnotation carries MCP tool metadata hints.
 type ToolAnnotation struct {
-	Title            string `json:"title,omitempty"`
-	ReadOnlyHint     *bool  `json:"readOnlyHint,omitempty"`
-	DestructiveHint  *bool  `json:"destructiveHint,omitempty"`
-	IdempotentHint   *bool  `json:"idempotentHint,omitempty"`
-	OpenWorldHint    *bool  `json:"openWorldHint,omitempty"`
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
 }
 
 // InputSchema is the JSON Schema for a tool's input parameters.
