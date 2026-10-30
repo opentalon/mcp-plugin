@@ -157,6 +157,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) *Registry {
 				ReadOnly:          readOnlyFromAnnotations(tool.Annotations),
 				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
 				ConfirmationHint:  confirmationHintFromMeta(tool.Meta),
+				Companions:        companionsFromMeta(cfg.Server, tool.Meta),
 				InjectContextArgs: injectContextArgs,
 			})
 		}
@@ -255,16 +256,17 @@ func readOnlyFromAnnotations(ann *mcp.ToolAnnotation) bool {
 }
 
 // alwaysIncludeFromMeta projects an MCP server's `_meta.always_include` flag
-// onto the tier flag the OpenTalon SDK consumes
-// (pluginpkg.ActionMsg.AlwaysInclude). When true, the orchestrator keeps the
-// action's full schema in the LLM's tools array every turn instead of leaving
-// it as a name-only catalog entry the model must load via get_tool_details.
-// A server sets it on the tools it wants one call away (e.g. its read/list
-// tools), so they need no discovery round-trip.
+// onto the flag the OpenTalon SDK consumes (pluginpkg.ActionMsg.AlwaysInclude).
+// When true, the orchestrator keeps the action's full schema in the LLM's
+// tools array every turn. Every other action lives in the orchestrator's
+// catalog and is loaded when the model asks for it (`_meta__load_tools`) or
+// calls it; its companions load with it. A server sets the flag on the tools
+// it wants one call away (e.g. its read/list tools), so they need no loading
+// step.
 //
 // Conservative default (false): a missing, empty, or malformed `_meta` — or a
-// server that never sets the flag — leaves the action catalog-only. Opting a
-// tool into the always-loaded tier is deliberate, never accidental.
+// server that never sets the flag — leaves the action in the catalog. Keeping
+// a tool always loaded is deliberate, never accidental.
 func alwaysIncludeFromMeta(meta json.RawMessage) bool {
 	if len(meta) == 0 {
 		return false
@@ -298,6 +300,34 @@ func confirmationHintFromMeta(meta json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(m.ConfirmationHint)
+}
+
+// companionsFromMeta projects an MCP server's `_meta.companions` list onto
+// pluginpkg.ActionMsg.Companions: the tools the host loads together with this
+// one, typically the lookups that supply its parameter values. Each name is
+// bridged the way Build names actions ("<server>__<tool>"), so it names an
+// action of this plugin.
+//
+// A missing or empty list yields none, and so does one that is not entirely
+// non-empty strings: the tool then loads alone, as it did before companions.
+func companionsFromMeta(server string, meta json.RawMessage) []string {
+	if len(meta) == 0 {
+		return nil
+	}
+	var m struct {
+		Companions []string `json:"companions"`
+	}
+	if err := json.Unmarshal(meta, &m); err != nil || len(m.Companions) == 0 {
+		return nil
+	}
+	names := make([]string, len(m.Companions))
+	for i, name := range m.Companions {
+		if name == "" {
+			return nil
+		}
+		names[i] = server + "__" + name
+	}
+	return names
 }
 
 // schemaToParams converts an MCP tool's input schema into the parameter list
