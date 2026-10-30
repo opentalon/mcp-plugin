@@ -338,9 +338,6 @@ func (c *Client) Close() {
 	}
 }
 
-// ServerName returns the configured server name.
-func (c *Client) ServerName() string { return c.cfg.Server }
-
 // IsAlive reports whether the client has an active transport connection.
 func (c *Client) IsAlive() bool {
 	return c.tp != nil && c.tp.context().Err() == nil
