@@ -231,10 +231,29 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 func (h *Handler) Check(ctx context.Context, req pluginpkg.Request) pluginpkg.CheckResult {
 	log.Printf("mcp-plugin: Check begin call_id=%s action=%q", req.ID, req.Action)
 
-	call, err := h.prepare("Check", req)
-	if err != nil {
+	// prepare may reconnect the action's server under the handler's context, so
+	// the connection outlives this check; the check stops waiting at its own
+	// deadline and the reconnect goes on for the calls after it.
+	type prepared struct {
+		call preparedCall
+		err  error
+	}
+	ready := make(chan prepared, 1)
+	go func() {
+		call, err := h.prepare("Check", req)
+		ready <- prepared{call, err}
+	}()
+	var p prepared
+	select {
+	case p = <-ready:
+	case <-ctx.Done():
+		log.Printf("mcp-plugin: Check call_id=%s no verdict while preparing: %v", req.ID, ctx.Err())
 		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
 	}
+	if p.err != nil {
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	call := p.call
 	result, err := call.client.CheckTool(ctx, call.mcpToolName, call.args, call.headers)
 	if err != nil {
 		log.Printf("mcp-plugin: Check call_id=%s server=%q tool=%q no verdict: %v", req.ID, call.cfg.Server, call.mcpToolName, err)

@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/opentalon/mcp-plugin/config"
+	"github.com/opentalon/mcp-plugin/mcp"
 	pluginpkg "github.com/opentalon/opentalon/pkg/plugin"
 )
 
@@ -234,5 +236,55 @@ func TestHandler_Check_verdict(t *testing.T) {
 				t.Errorf("Message = %q, want the error the execution's refusal has: %q", got.Message, exec.Error)
 			}
 		})
+	}
+}
+
+// A check whose action has to reconnect its server ends at the check's
+// deadline too, also while the server holds the reconnect's handshake open.
+func TestHandler_Check_deadlineCoversTheReconnect(t *testing.T) {
+	t.Setenv("OPENTALON_MCP_CACHE_DIR", t.TempDir())
+	if err := saveCache(config.CacheDir(), "srv", []mcp.Tool{{Name: "set_value", Description: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stall atomic.Bool
+	reached := make(chan struct{})
+	var reachedOnce sync.Once
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if stall.Load() {
+			reachedOnce.Do(func() { close(reached) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		http.Error(w, "offline", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	h := NewHandler(testCtx(t))
+	t.Cleanup(func() { close(release) })
+
+	cfg := config.ServerConfig{Server: "srv", URL: srv.URL + "/mcp"}
+	h.SetRegistry(Build(testCtx(t), []config.ServerConfig{cfg}), nil)
+	stall.Store(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan pluginpkg.CheckResult, 1)
+	go func() { done <- h.Check(ctx, pluginpkg.Request{ID: "call-1", Action: "srv__set_value"}) }()
+
+	select {
+	case got := <-done:
+		if got.Verdict != pluginpkg.CheckUnspecified {
+			t.Errorf("Check = %+v, want unspecified", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Check did not end at its deadline while its server reconnected")
+	}
+	select {
+	case <-reached:
+	default:
+		t.Error("the check never reached the reconnect")
 	}
 }
