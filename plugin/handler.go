@@ -23,8 +23,8 @@ import (
 // instead of being cut off.
 const refreshGraceCloseDelay = 70 * time.Second
 
-// Handler implements pluginpkg.Handler, pluginpkg.Configurable and
-// pluginpkg.Refreshable using the MCP registry.
+// Handler implements pluginpkg.Handler, pluginpkg.Configurable,
+// pluginpkg.Refreshable and pluginpkg.Checker using the MCP registry.
 type Handler struct {
 	ctx context.Context
 
@@ -37,11 +37,14 @@ type Handler struct {
 	refreshing bool                  // true while a refresh Build is in flight; coalesces concurrent calls
 }
 
-// Compile-time assertion that Handler satisfies the host's optional Refreshable
-// interface. If the core SDK's signature ever drifts, this fails the build here
-// rather than silently disabling refresh (the host's type assertion would just
-// miss and fall back to Unimplemented).
-var _ pluginpkg.Refreshable = (*Handler)(nil)
+// Compile-time assertions that Handler satisfies the host's optional
+// Refreshable and Checker interfaces. If the core SDK's signature ever drifts,
+// this fails the build here rather than silently disabling refresh or checks
+// (the host's type assertion would just miss and fall back to Unimplemented).
+var (
+	_ pluginpkg.Refreshable = (*Handler)(nil)
+	_ pluginpkg.Checker     = (*Handler)(nil)
+)
 
 // NewHandler creates a Handler. The registry is nil until Configure is called
 // or SetRegistry is used directly (e.g. when bootstrapping from the env var).
@@ -218,6 +221,31 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	}
 	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d structured_len=%d", req.ID, len(content), len(structured))
 	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
+}
+
+// Check implements pluginpkg.Checker. It prepares req as Execute does, so the
+// MCP server gets the tool name, arguments and headers an execution sends, and
+// sends them for a check instead of tools/call. A refusal carries the text an
+// execution's refusal has. A call that cannot be sent and an answer that is no
+// verdict give CheckUnspecified, and the host asks the user as without a check.
+func (h *Handler) Check(ctx context.Context, req pluginpkg.Request) pluginpkg.CheckResult {
+	log.Printf("mcp-plugin: Check begin call_id=%s action=%q", req.ID, req.Action)
+
+	call, err := h.prepare("Check", req)
+	if err != nil {
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	result, err := call.client.CheckTool(ctx, call.mcpToolName, call.args, call.headers)
+	if err != nil {
+		log.Printf("mcp-plugin: Check call_id=%s server=%q tool=%q no verdict: %v", req.ID, call.cfg.Server, call.mcpToolName, err)
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	if !result.Refused {
+		log.Printf("mcp-plugin: Check call_id=%s passed", req.ID)
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckPassed}
+	}
+	log.Printf("mcp-plugin: Check call_id=%s refused kind=%q", req.ID, result.Kind)
+	return pluginpkg.CheckResult{Verdict: pluginpkg.CheckRefused, Kind: result.Kind, Message: result.Message}
 }
 
 // preparedCall is a tool call made ready for its MCP server: the action's
