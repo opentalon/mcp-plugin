@@ -139,7 +139,7 @@ func (c *Client) sendInitialize(tp transport) (rpcResponse, error) {
 			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
 		},
 	}
-	return tp.roundTrip(initReq, 15*time.Second, nil)
+	return tp.roundTrip(context.Background(), initReq, 15*time.Second, nil)
 }
 
 // finishInitialize completes the handshake on an initialize response: it fails
@@ -204,7 +204,7 @@ func (c *Client) ListTools() ([]Tool, error) {
 		Params:  map[string]interface{}{},
 	}
 
-	resp, err := c.tp.roundTrip(req, 30*time.Second, nil)
+	resp, err := c.tp.roundTrip(context.Background(), req, 30*time.Second, nil)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d err: %v", c.cfg.Server, id, err)
 		return nil, err
@@ -254,7 +254,7 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 		log.Printf("mcp-plugin: server %s: CallTool jsonrpc_id=%d request_body=%s", c.cfg.Server, id, string(reqBody))
 	}
 
-	resp, err := c.tp.roundTrip(req, 60*time.Second, extraHeaders)
+	resp, err := c.tp.roundTrip(context.Background(), req, 60*time.Second, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d err: %v", c.cfg.Server, name, id, err)
 		return "", "", err
