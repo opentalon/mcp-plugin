@@ -2,7 +2,7 @@ module github.com/opentalon/mcp-plugin
 
 go 1.25
 
-require github.com/opentalon/opentalon v0.3.1-0.20261119092008-14733df42c54
+require github.com/opentalon/opentalon v0.3.1-0.20261119103430-1dbf662fe451
 
 require (
 	github.com/google/uuid v1.6.0 // indirect
