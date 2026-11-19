@@ -35,7 +35,7 @@ func newStreamableHTTP(ctx context.Context, httpClient *http.Client, url, server
 	}
 }
 
-func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
+func (s *streamableHTTP) roundTrip(ctx context.Context, req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
 	method := req.Method
 	var reqID int64
 	if req.ID != nil {
@@ -49,11 +49,13 @@ func (s *streamableHTTP) roundTrip(req rpcRequest, timeout time.Duration, extraH
 		return rpcResponse{}, fmt.Errorf("encode request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(s.ctx, timeout)
+	reqCtx, cancel := context.WithTimeout(s.ctx, timeout)
 	defer cancel()
-	ctx = contextWithExtraHeaders(ctx, extraHeaders)
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	reqCtx = contextWithExtraHeaders(reqCtx, extraHeaders)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
 		return rpcResponse{}, fmt.Errorf("build POST: %w", err)
 	}

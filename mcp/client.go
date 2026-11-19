@@ -24,6 +24,9 @@ import (
 // response, leaving downstream RAG / system-prompt enrichment empty.
 const protocolVersion = "2025-03-26"
 
+// toolCallTimeout bounds a tools/call round trip, and a check's.
+const toolCallTimeout = 60 * time.Second
+
 // Client connects to one MCP server and exposes ListTools / CallTool.
 // It auto-detects the transport: tries Streamable HTTP first, then falls
 // back to the legacy HTTP+SSE transport.
@@ -139,7 +142,7 @@ func (c *Client) sendInitialize(tp transport) (rpcResponse, error) {
 			ClientInfo:      clientInfo{Name: "opentalon-mcp", Version: "1.0"},
 		},
 	}
-	return tp.roundTrip(initReq, 15*time.Second, nil)
+	return tp.roundTrip(context.Background(), initReq, 15*time.Second, nil)
 }
 
 // finishInitialize completes the handshake on an initialize response: it fails
@@ -204,7 +207,7 @@ func (c *Client) ListTools() ([]Tool, error) {
 		Params:  map[string]interface{}{},
 	}
 
-	resp, err := c.tp.roundTrip(req, 30*time.Second, nil)
+	resp, err := c.tp.roundTrip(context.Background(), req, 30*time.Second, nil)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: ListTools jsonrpc_id=%d err: %v", c.cfg.Server, id, err)
 		return nil, err
@@ -254,7 +257,7 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 		log.Printf("mcp-plugin: server %s: CallTool jsonrpc_id=%d request_body=%s", c.cfg.Server, id, string(reqBody))
 	}
 
-	resp, err := c.tp.roundTrip(req, 60*time.Second, extraHeaders)
+	resp, err := c.tp.roundTrip(context.Background(), req, toolCallTimeout, extraHeaders)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d err: %v", c.cfg.Server, name, id, err)
 		return "", "", err
@@ -276,7 +279,7 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 			}
 		}
 		log.Printf("mcp-plugin: server %s: CallTool tool=%q jsonrpc_id=%d tool error in body", c.cfg.Server, name, id)
-		return "", "", fmt.Errorf("tool %s error: %s", name, strings.Join(parts, "; "))
+		return "", "", errors.New(toolErrorText(name, strings.Join(parts, "; ")))
 	}
 	var parts []string
 	for _, item := range result.Content {
@@ -288,6 +291,72 @@ func (c *Client) CallTool(name string, args map[string]interface{}, extraHeaders
 	structured = structuredPayload(result.StructuredContent)
 	log.Printf("mcp-plugin: server %s: CallTool ok tool=%q jsonrpc_id=%d content_len=%d structured_len=%d", c.cfg.Server, name, id, len(content), len(structured))
 	return content, structured, nil
+}
+
+// toolErrorText is the text a tool's refusal reaches the host with: the tool's
+// own text behind a lead-in that names the tool.
+func toolErrorText(name, text string) string {
+	return fmt.Sprintf("tool %s error: %s", name, text)
+}
+
+// checkMethod is the method on which an MCP server checks a tool call without
+// executing it. It is OpenTalon's, not MCP's: a server without it answers
+// "method not found".
+const checkMethod = "opentalon/tools/check"
+
+// CheckResult is an MCP server's verdict on a tool call sent for a check.
+type CheckResult struct {
+	// Refused is false when the call passed the check.
+	Refused bool
+	// Kind is the kind of error the execution would give, such as
+	// "forbidden" or "invalid_argument".
+	Kind string
+	// Message is the text an execution's refusal of the call reaches the
+	// host with, so the model reads the same refusal either way.
+	Message string
+}
+
+// CheckTool sends a tool call to the server's checkMethod, with the
+// parameters CallTool sends, and returns the server's verdict; the server
+// does not execute the call. The round trip ends with ctx, and no later than
+// a tool call's.
+//
+// Any answer that is no verdict is an error: an error of the method (the
+// server does not know it, the tool has no check or is unknown, the server
+// failed), a transport error, the end of ctx, a result that cannot be read, a
+// verdict this client does not know, and a refusal without a message, which
+// the host takes as no verdict and the lead-in would otherwise hide.
+func (c *Client) CheckTool(ctx context.Context, name string, args map[string]interface{}, extraHeaders http.Header) (CheckResult, error) {
+	id := c.nextID()
+	req := rpcRequest{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  checkMethod,
+		Params: toolsCallParams{
+			Name:      name,
+			Arguments: args,
+		},
+	}
+	resp, err := c.tp.roundTrip(ctx, req, toolCallTimeout, extraHeaders)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	if resp.Error != nil {
+		return CheckResult{}, fmt.Errorf("%s %s: %s", checkMethod, name, resp.Error)
+	}
+	var answer checkAnswer
+	if err := json.Unmarshal(resp.Result, &answer); err != nil {
+		return CheckResult{}, fmt.Errorf("decode %s: %w", checkMethod, err)
+	}
+	switch {
+	case answer.Verdict == "passed":
+		return CheckResult{}, nil
+	case answer.Verdict != "refused":
+		return CheckResult{}, fmt.Errorf("%s %s: no verdict in %s", checkMethod, name, resp.Result)
+	case strings.TrimSpace(answer.Message) == "":
+		return CheckResult{}, fmt.Errorf("%s %s: refused without a message", checkMethod, name)
+	}
+	return CheckResult{Refused: true, Kind: answer.Kind, Message: toolErrorText(name, answer.Message)}, nil
 }
 
 // structuredPayload normalises a raw JSON structured-content payload:

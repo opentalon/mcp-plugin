@@ -158,6 +158,7 @@ func Build(ctx context.Context, cfgs []config.ServerConfig) *Registry {
 				AlwaysInclude:     alwaysIncludeFromMeta(tool.Meta),
 				ConfirmationHint:  confirmationHintFromMeta(tool.Meta),
 				Companions:        companionsFromMeta(cfg.Server, tool.Meta),
+				Check:             checkFromMeta(tool.Meta),
 				InjectContextArgs: injectContextArgs,
 			})
 		}
@@ -278,6 +279,27 @@ func alwaysIncludeFromMeta(meta json.RawMessage) bool {
 		return false
 	}
 	return m.AlwaysInclude
+}
+
+// checkFromMeta projects an MCP server's `_meta.check` flag onto the action's
+// Check: the server can check a call to the tool without executing it, on the
+// method Handler.Check sends. Before the host asks the user to confirm a call
+// to such an action, it sends the call for a check.
+//
+// Only the boolean true declares it. A missing, empty or malformed `_meta`, or
+// a value that is not a boolean, leaves the action without a check, and the
+// host asks the user as before.
+func checkFromMeta(meta json.RawMessage) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	var m struct {
+		Check bool `json:"check"`
+	}
+	if err := json.Unmarshal(meta, &m); err != nil {
+		return false
+	}
+	return m.Check
 }
 
 // confirmationHintFromMeta projects an MCP server's `_meta.confirmation_hint`

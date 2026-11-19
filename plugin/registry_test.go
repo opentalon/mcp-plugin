@@ -590,6 +590,32 @@ func TestAlwaysIncludeFromMeta(t *testing.T) {
 	}
 }
 
+func TestCheckFromMeta(t *testing.T) {
+	cases := []struct {
+		name string
+		meta json.RawMessage
+		want bool
+	}{
+		{"nil meta", nil, false},
+		{"empty meta", json.RawMessage(``), false},
+		{"empty object", json.RawMessage(`{}`), false},
+		{"flag true", json.RawMessage(`{"check":true}`), true},
+		{"flag true among others", json.RawMessage(`{"always_include":true,"check":true}`), true},
+		{"flag false", json.RawMessage(`{"check":false}`), false},
+		{"null", json.RawMessage(`{"check":null}`), false},
+		{"string", json.RawMessage(`{"check":"true"}`), false},
+		{"number", json.RawMessage(`{"check":1}`), false},
+		{"malformed json", json.RawMessage(`{not json`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkFromMeta(tc.meta); got != tc.want {
+				t.Errorf("checkFromMeta(%s) = %v, want %v", string(tc.meta), got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfirmationHintFromMeta(t *testing.T) {
 	cases := []struct {
 		name string
@@ -643,7 +669,7 @@ func TestCompanionsFromMeta(t *testing.T) {
 
 // fakeMCPHTTPServerWithMetaTools serves four tools: one pinned via
 // _meta.always_include=true, one explicitly false, one without _meta, and one
-// naming two of the others in _meta.companions.
+// naming two of the others in _meta.companions and declaring _meta.check.
 func fakeMCPHTTPServerWithMetaTools(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -669,7 +695,7 @@ func fakeMCPHTTPServerWithMetaTools(t *testing.T) *httptest.Server {
 				{"name":"list_items","description":"Pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":true}},
 				{"name":"show_item","description":"Not pinned","inputSchema":{"type":"object","properties":{}},"_meta":{"always_include":false}},
 				{"name":"no_meta","description":"No meta","inputSchema":{"type":"object","properties":{}}},
-				{"name":"update_item","description":"With companions","inputSchema":{"type":"object","properties":{}},"_meta":{"companions":["list_items","show_item"]}}
+				{"name":"update_item","description":"With companions","inputSchema":{"type":"object","properties":{}},"_meta":{"companions":["list_items","show_item"],"check":true}}
 			]}`)
 		default:
 			result = json.RawMessage(`{}`)
@@ -737,6 +763,31 @@ func TestBuild_keepsCompanionsWhenServingFromCache(t *testing.T) {
 		"srv__update_item": {"srv__list_items", "srv__show_item"},
 		"srv__no_meta":     nil,
 	})
+}
+
+// The declaration reaches the action from a live tools/list and, as the
+// offline cache stores the raw tools/list, from the cache as well.
+func TestBuild_propagatesCheckMetaToActionMsg(t *testing.T) {
+	t.Setenv("OPENTALON_MCP_CACHE_DIR", t.TempDir())
+	srv := fakeMCPHTTPServerWithMetaTools(t)
+	live := Build(testCtx(t), []config.ServerConfig{{Server: "srv", URL: srv.URL + "/mcp"}})
+	cached := Build(context.Background(), []config.ServerConfig{{Server: "srv", URL: "http://127.0.0.1:0/mcp"}})
+	if len(cached.offlineServers) != 1 {
+		t.Fatalf("offlineServers = %v, want the server served from cache", cached.offlineServers)
+	}
+
+	want := map[string]bool{"srv__update_item": true, "srv__list_items": false, "srv__no_meta": false}
+	for source, r := range map[string]*Registry{"live": live, "cache": cached} {
+		got := make(map[string]bool, len(r.caps.Actions))
+		for _, a := range r.caps.Actions {
+			got[a.Name] = a.Check
+		}
+		for name, w := range want {
+			if g, ok := got[name]; !ok || g != w {
+				t.Errorf("%s: %s Check = %v (present %v), want %v", source, name, g, ok, w)
+			}
+		}
+	}
 }
 
 func assertCompanions(t *testing.T, r *Registry, want map[string][]string) {

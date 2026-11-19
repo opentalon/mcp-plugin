@@ -21,7 +21,7 @@ type sseTransport struct {
 	server     string // config server key; only for logs
 }
 
-func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
+func (s *sseTransport) roundTrip(ctx context.Context, req rpcRequest, timeout time.Duration, extraHeaders http.Header) (rpcResponse, error) {
 	if req.ID == nil {
 		return rpcResponse{}, fmt.Errorf("roundTrip requires a request ID")
 	}
@@ -31,7 +31,7 @@ func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration, extraHea
 	ch := s.conn.subscribe(id)
 	defer s.conn.unsubscribe(id)
 
-	if err := s.post(req, extraHeaders); err != nil {
+	if err := s.post(ctx, req, extraHeaders); err != nil {
 		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d POST failed: %v", s.server, req.Method, id, err)
 		return rpcResponse{}, err
 	}
@@ -47,12 +47,15 @@ func (s *sseTransport) roundTrip(req rpcRequest, timeout time.Duration, extraHea
 	case <-s.conn.ctx.Done():
 		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d transport closed: %v", s.server, req.Method, id, s.conn.ctx.Err())
 		return rpcResponse{}, fmt.Errorf("SSE closed during %s", req.Method)
+	case <-ctx.Done():
+		log.Printf("mcp-plugin: server %s: SSE ← %s jsonrpc_id=%d caller done: %v", s.server, req.Method, id, ctx.Err())
+		return rpcResponse{}, fmt.Errorf("%s: %w", req.Method, ctx.Err())
 	}
 }
 
 func (s *sseTransport) notify(req rpcRequest) error {
 	log.Printf("mcp-plugin: server %s: SSE → %s (notify, before POST)", s.server, req.Method)
-	err := s.post(req, nil)
+	err := s.post(context.Background(), req, nil)
 	if err != nil {
 		log.Printf("mcp-plugin: server %s: SSE ← notify %s err: %v", s.server, req.Method, err)
 		return err
@@ -61,13 +64,18 @@ func (s *sseTransport) notify(req rpcRequest) error {
 	return nil
 }
 
-func (s *sseTransport) post(req rpcRequest, extraHeaders http.Header) error {
+// post sends req to the message endpoint; the POST ends with the connection
+// or with ctx, whichever ends first.
+func (s *sseTransport) post(ctx context.Context, req rpcRequest, extraHeaders http.Header) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	ctx := contextWithExtraHeaders(s.conn.ctx, extraHeaders)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(body))
+	postCtx, cancel := context.WithCancel(s.conn.ctx)
+	defer cancel()
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	httpReq, err := http.NewRequestWithContext(contextWithExtraHeaders(postCtx, extraHeaders), http.MethodPost, s.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build POST: %w", err)
 	}

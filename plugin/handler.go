@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,8 +23,8 @@ import (
 // instead of being cut off.
 const refreshGraceCloseDelay = 70 * time.Second
 
-// Handler implements pluginpkg.Handler, pluginpkg.Configurable and
-// pluginpkg.Refreshable using the MCP registry.
+// Handler implements pluginpkg.Handler, pluginpkg.Configurable,
+// pluginpkg.Refreshable and pluginpkg.Checker using the MCP registry.
 type Handler struct {
 	ctx context.Context
 
@@ -36,11 +37,14 @@ type Handler struct {
 	refreshing bool                  // true while a refresh Build is in flight; coalesces concurrent calls
 }
 
-// Compile-time assertion that Handler satisfies the host's optional Refreshable
-// interface. If the core SDK's signature ever drifts, this fails the build here
-// rather than silently disabling refresh (the host's type assertion would just
-// miss and fall back to Unimplemented).
-var _ pluginpkg.Refreshable = (*Handler)(nil)
+// Compile-time assertions that Handler satisfies the host's optional
+// Refreshable and Checker interfaces. If the core SDK's signature ever drifts,
+// this fails the build here rather than silently disabling refresh or checks
+// (the host's type assertion would just miss and fall back to Unimplemented).
+var (
+	_ pluginpkg.Refreshable = (*Handler)(nil)
+	_ pluginpkg.Checker     = (*Handler)(nil)
+)
 
 // NewHandler creates a Handler. The registry is nil until Configure is called
 // or SetRegistry is used directly (e.g. when bootstrapping from the env var).
@@ -203,15 +207,84 @@ func defaultCaps() pluginpkg.CapabilitiesMsg {
 func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	log.Printf("mcp-plugin: Execute begin call_id=%s action=%q", req.ID, req.Action)
 
+	call, err := h.prepare("Execute", req)
+	if err != nil {
+		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
+	}
+	log.Printf("mcp-plugin: Execute call_id=%s before CallTool server=%q tool=%q", req.ID, call.cfg.Server, call.mcpToolName)
+
+	content, structured, err := call.client.CallTool(call.mcpToolName, call.args, call.headers)
+	if err != nil {
+		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)
+		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", call.cfg.Server, call.mcpToolName, err)
+		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
+	}
+	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d structured_len=%d", req.ID, len(content), len(structured))
+	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
+}
+
+// Check implements pluginpkg.Checker. It prepares req as Execute does, so the
+// MCP server gets the tool name, arguments and headers an execution sends, and
+// sends them for a check instead of tools/call. A refusal carries the text an
+// execution's refusal has. A call that cannot be sent and an answer that is no
+// verdict give CheckUnspecified, and the host asks the user as without a check.
+func (h *Handler) Check(ctx context.Context, req pluginpkg.Request) pluginpkg.CheckResult {
+	log.Printf("mcp-plugin: Check begin call_id=%s action=%q", req.ID, req.Action)
+
+	// prepare may reconnect the action's server under the handler's context, so
+	// the connection outlives this check; the check stops waiting at its own
+	// deadline and the reconnect goes on for the calls after it.
+	type prepared struct {
+		call preparedCall
+		err  error
+	}
+	ready := make(chan prepared, 1)
+	go func() {
+		call, err := h.prepare("Check", req)
+		ready <- prepared{call, err}
+	}()
+	var p prepared
+	select {
+	case p = <-ready:
+	case <-ctx.Done():
+		log.Printf("mcp-plugin: Check call_id=%s no verdict while preparing: %v", req.ID, ctx.Err())
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	if p.err != nil {
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	call := p.call
+	result, err := call.client.CheckTool(ctx, call.mcpToolName, call.args, call.headers)
+	if err != nil {
+		log.Printf("mcp-plugin: Check call_id=%s server=%q tool=%q no verdict: %v", req.ID, call.cfg.Server, call.mcpToolName, err)
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
+	}
+	if !result.Refused {
+		log.Printf("mcp-plugin: Check call_id=%s passed", req.ID)
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckPassed}
+	}
+	log.Printf("mcp-plugin: Check call_id=%s refused kind=%q", req.ID, result.Kind)
+	return pluginpkg.CheckResult{Verdict: pluginpkg.CheckRefused, Kind: result.Kind, Message: result.Message}
+}
+
+// preparedCall is a tool call made ready for its MCP server: the action's
+// entry (with a live client), and the arguments and per-request headers the
+// call is sent with.
+type preparedCall struct {
+	entry
+	args    map[string]interface{}
+	headers http.Header
+}
+
+// prepare makes req ready to send to its MCP server. op names the operation
+// in the logs. On error, the error's text is what the response carries.
+func (h *Handler) prepare(op string, req pluginpkg.Request) (preparedCall, error) {
 	h.mu.RLock()
 	reg := h.registry
 	h.mu.RUnlock()
 	if reg == nil {
-		log.Printf("mcp-plugin: Execute call_id=%s err: not yet configured", req.ID)
-		return pluginpkg.Response{
-			CallID: req.ID,
-			Error:  "mcp-plugin: not yet configured",
-		}
+		log.Printf("mcp-plugin: %s call_id=%s err: not yet configured", op, req.ID)
+		return preparedCall{}, errors.New("mcp-plugin: not yet configured")
 	}
 
 	reg.mu.RLock()
@@ -219,14 +292,11 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	reg.mu.RUnlock()
 
 	if !ok {
-		log.Printf("mcp-plugin: Execute call_id=%s unknown action=%q", req.ID, req.Action)
-		return pluginpkg.Response{
-			CallID: req.ID,
-			Error:  fmt.Sprintf("unknown action %q", req.Action),
-		}
+		log.Printf("mcp-plugin: %s call_id=%s unknown action=%q", op, req.ID, req.Action)
+		return preparedCall{}, fmt.Errorf("unknown action %q", req.Action)
 	}
 
-	log.Printf("mcp-plugin: Execute call_id=%s resolved server=%q mcp_tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
+	log.Printf("mcp-plugin: %s call_id=%s resolved server=%q mcp_tool=%q", op, req.ID, e.cfg.Server, e.mcpToolName)
 
 	if e.client == nil || !e.client.IsAlive() {
 		reason := "loaded from cache (server was offline at startup)"
@@ -241,10 +311,7 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 		client, err := reg.reconnect(h.ctx, e.cfg)
 		if err != nil {
 			log.Printf("mcp-plugin: server %s: reconnect failed: %v", e.cfg.Server, err)
-			return pluginpkg.Response{
-				CallID: req.ID,
-				Error:  fmt.Sprintf("MCP server %q is offline (reconnect failed: %v)", e.cfg.Server, err),
-			}
+			return preparedCall{}, fmt.Errorf("MCP server %q is offline (reconnect failed: %v)", e.cfg.Server, err)
 		}
 		e.client = client
 	}
@@ -254,13 +321,13 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	for k, prop := range e.schema.Properties {
 		schemaTypes[k] = prop.Type
 	}
-	log.Printf("mcp-plugin: Execute call_id=%s raw_args=%v schema_types=%v", req.ID, req.Args, schemaTypes)
+	log.Printf("mcp-plugin: %s call_id=%s raw_args=%v schema_types=%v", op, req.ID, req.Args, schemaTypes)
 	args := convertArgs(req.Args, e.schema)
 	coercedParts := make([]string, 0, len(args))
 	for k, v := range args {
 		coercedParts = append(coercedParts, fmt.Sprintf("%s=%v(%T)", k, v, v))
 	}
-	log.Printf("mcp-plugin: Execute call_id=%s coerced_args=[%s]", req.ID, strings.Join(coercedParts, ", "))
+	log.Printf("mcp-plugin: %s call_id=%s coerced_args=[%s]", op, req.ID, strings.Join(coercedParts, ", "))
 	// Resolve namespaced tool names in args (e.g. default_tool_name, tool_name
 	// inside workorder tasks). The LLM uses "server__tool" but the MCP server
 	// only knows "tool".
@@ -269,16 +336,15 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 	// that are always returned. The MCP server rejects these as invalid.
 	// Strip any value not in the opt-in set parsed from the parameter description.
 	sanitizeIncludeFields(args, e.schema)
-	log.Printf("mcp-plugin: Execute call_id=%s before CallTool server=%q tool=%q", req.ID, e.cfg.Server, e.mcpToolName)
 
 	// Build per-request credential headers for this server from WhoAmI.
 	var extraHeaders http.Header
 	if cred, ok := req.CredentialHeaders[e.cfg.Server]; ok && cred.Header != "" {
 		extraHeaders = http.Header{}
 		extraHeaders.Set(cred.Header, cred.Value)
-		log.Printf("mcp-plugin: Execute call_id=%s injecting credential header %q for server %q", req.ID, cred.Header, e.cfg.Server)
+		log.Printf("mcp-plugin: %s call_id=%s injecting credential header %q for server %q", op, req.ID, cred.Header, e.cfg.Server)
 	} else {
-		log.Printf("mcp-plugin: Execute call_id=%s no credential header for server %q (available: %v)", req.ID, e.cfg.Server, credKeys(req.CredentialHeaders))
+		log.Printf("mcp-plugin: %s call_id=%s no credential header for server %q (available: %v)", op, req.ID, e.cfg.Server, credKeys(req.CredentialHeaders))
 	}
 
 	// Forward configured context args (injected by the host into req.Args)
@@ -294,24 +360,17 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 				extraHeaders = http.Header{}
 			}
 			extraHeaders.Set(headerName, val)
-			log.Printf("mcp-plugin: Execute call_id=%s forwarding context arg %q as header %q for server %q", req.ID, ctxArg, headerName, e.cfg.Server)
+			log.Printf("mcp-plugin: %s call_id=%s forwarding context arg %q as header %q for server %q", op, req.ID, ctxArg, headerName, e.cfg.Server)
 		} else {
 			// Present but not forwardable (empty header name, empty or
 			// non-string value). Still stripped so it can't leak into the
 			// tool args; logged so a misconfigured mapping isn't silent.
-			log.Printf("mcp-plugin: Execute call_id=%s dropping context arg %q without forwarding (empty header name or non-string value) for server %q", req.ID, ctxArg, e.cfg.Server)
+			log.Printf("mcp-plugin: %s call_id=%s dropping context arg %q without forwarding (empty header name or non-string value) for server %q", op, req.ID, ctxArg, e.cfg.Server)
 		}
 		delete(args, ctxArg)
 	}
 
-	content, structured, err := e.client.CallTool(e.mcpToolName, args, extraHeaders)
-	if err != nil {
-		log.Printf("mcp-plugin: Execute call_id=%s CallTool err: %v", req.ID, err)
-		log.Printf("mcp-plugin: server %s: tool %q call failed: %v", e.cfg.Server, e.mcpToolName, err)
-		return pluginpkg.Response{CallID: req.ID, Error: err.Error()}
-	}
-	log.Printf("mcp-plugin: Execute call_id=%s ok content_len=%d structured_len=%d", req.ID, len(content), len(structured))
-	return pluginpkg.Response{CallID: req.ID, Content: content, StructuredContent: structured}
+	return preparedCall{entry: e, args: args, headers: extraHeaders}, nil
 }
 
 // resolveToolNameArgs converts a namespaced tool name the LLM supplied as an

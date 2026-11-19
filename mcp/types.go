@@ -245,3 +245,13 @@ type Content struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 }
+
+// opentalon/tools/check types; the request carries toolsCallParams.
+
+// checkAnswer is a server's verdict on a call sent for a check:
+// {"verdict":"passed"} or {"verdict":"refused","kind":…,"message":…}.
+type checkAnswer struct {
+	Verdict string `json:"verdict"`
+	Kind    string `json:"kind,omitempty"`
+	Message string `json:"message,omitempty"`
+}

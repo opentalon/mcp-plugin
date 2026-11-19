@@ -62,6 +62,25 @@ not passed on as a tool argument either, so an MCP server sees the header only
 when the value genuinely exists — absent means absent, never an invented
 default. Requires a host that provides the named argument.
 
+### Checking a call before the user confirms it
+
+A tool whose `tools/list` entry sets `"_meta": {"check": true}` declares that
+its server can check a call without executing it; the action then carries
+`Check`. Only the boolean `true` declares it. Before the host asks the user to
+confirm a call to such an action, it sends the call for a check: the plugin
+prepares it exactly as for an execution (arguments, credential and context
+headers) and sends it with the parameters of `tools/call` as the method
+`opentalon/tools/check`. The check never sends `tools/call`.
+
+| The server answers | The host |
+|---|---|
+| `{"verdict": "passed"}` | asks the user, as without a check |
+| `{"verdict": "refused", "kind": "…", "message": "…"}` | answers the call with the message behind the lead-in of a failed tool call (`tool <name> error: `), without asking the user and without executing it |
+| an error (no such method, a tool without a check, an unknown tool), anything else, or nothing before the host's deadline | asks the user, as without a check |
+
+A check must not change anything on the server. Requires a host that sends
+checks.
+
 For TCP mode (e.g. Docker), set `MCP_GRPC_PORT`:
 
 ```sh
