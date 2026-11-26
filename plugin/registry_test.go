@@ -180,6 +180,69 @@ func TestBuild_forwardsServerInstructionsToSystemPromptAddition(t *testing.T) {
 	}
 }
 
+// fakeMCPHTTPServerWithTools is a Streamable HTTP MCP server whose tools/list
+// returns the given tools array verbatim.
+func fakeMCPHTTPServerWithTools(t *testing.T, toolsJSON string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result json.RawMessage
+		switch req.Method {
+		case "initialize":
+			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
+		case "tools/list":
+			result = json.RawMessage(`{"tools":` + toolsJSON + `}`)
+		default:
+			result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuild_passesDescriptionAsTheServerWroteIt(t *testing.T) {
+	srv := fakeMCPHTTPServerWithTools(t, `[
+		{"name":"list_items","description":"Lists items.\n\nDetail.","inputSchema":{"type":"object","properties":{}},
+		 "outputSchema":{"type":"object","properties":{"items":{"type":"array"}}}},
+		{"name":"show_item","description":"Shows one item.","inputSchema":{"type":"object","properties":{}}}
+	]`)
+
+	r := Build(testCtx(t), []config.ServerConfig{{Server: "srv", URL: srv.URL + "/mcp"}})
+
+	want := map[string]string{
+		"srv__list_items": "Lists items.\n\nDetail.",
+		"srv__show_item":  "Shows one item.",
+	}
+	got := make(map[string]string, len(r.caps.Actions))
+	for _, a := range r.caps.Actions {
+		got[a.Name] = a.Description
+	}
+	for name, w := range want {
+		if g, ok := got[name]; !ok || g != w {
+			t.Errorf("%s Description = %q (present %v), want %q", name, g, ok, w)
+		}
+	}
+}
+
 func TestBuild_emptySystemPromptAdditionWhenNoInstructions(t *testing.T) {
 	srv := fakeMCPHTTPServerWithInstructions(t, "do_thing", "") // no instructions
 	ctx := testCtx(t)
