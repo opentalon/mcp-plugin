@@ -116,6 +116,12 @@ func TestBuild_populatesRegistry(t *testing.T) {
 // tool. Used to verify Build forwards instructions onto caps.SystemPromptAddition.
 func fakeMCPHTTPServerWithInstructions(t *testing.T, toolName, instructions string) *httptest.Server {
 	t.Helper()
+	return fakeMCPHTTPServerWithTools(t, instructions,
+		fmt.Sprintf(`[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]`, toolName))
+}
+
+func fakeMCPHTTPServerWithTools(t *testing.T, instructions, toolsJSON string) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -143,7 +149,7 @@ func fakeMCPHTTPServerWithInstructions(t *testing.T, toolName, instructions stri
 			b, _ := json.Marshal(payload)
 			result = b
 		case "tools/list":
-			result = json.RawMessage(fmt.Sprintf(`{"tools":[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]}`, toolName))
+			result = json.RawMessage(`{"tools":` + toolsJSON + `}`)
 		default:
 			result = json.RawMessage(`{}`)
 		}
@@ -180,47 +186,8 @@ func TestBuild_forwardsServerInstructionsToSystemPromptAddition(t *testing.T) {
 	}
 }
 
-// fakeMCPHTTPServerWithTools is a Streamable HTTP MCP server whose tools/list
-// returns the given tools array verbatim.
-func fakeMCPHTTPServerWithTools(t *testing.T, toolsJSON string) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ID     *int64 `json:"id"`
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if req.ID == nil {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		var result json.RawMessage
-		switch req.Method {
-		case "initialize":
-			result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{}}`)
-		case "tools/list":
-			result = json.RawMessage(`{"tools":` + toolsJSON + `}`)
-		default:
-			result = json.RawMessage(`{}`)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      int64           `json:"id"`
-			Result  json.RawMessage `json:"result"`
-		}{JSONRPC: "2.0", ID: *req.ID, Result: result})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func TestBuild_passesDescriptionAsTheServerWroteIt(t *testing.T) {
-	srv := fakeMCPHTTPServerWithTools(t, `[
+	srv := fakeMCPHTTPServerWithTools(t, "", `[
 		{"name":"list_items","description":"Lists items.\n\nDetail.","inputSchema":{"type":"object","properties":{}},
 		 "outputSchema":{"type":"object","properties":{"items":{"type":"array"}}}},
 		{"name":"show_item","description":"Shows one item.","inputSchema":{"type":"object","properties":{}}}
