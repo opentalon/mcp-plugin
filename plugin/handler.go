@@ -226,8 +226,10 @@ func (h *Handler) Execute(req pluginpkg.Request) pluginpkg.Response {
 // Check implements pluginpkg.Checker. It prepares req as Execute does, so the
 // MCP server gets the tool name, arguments and headers an execution sends, and
 // sends them for a check instead of tools/call. A refusal carries the text an
-// execution's refusal has. A call that cannot be sent and an answer that is no
-// verdict give CheckUnspecified, and the host asks the user as without a check.
+// execution's refusal has. A pass carries ConfirmationNotRequired when the
+// server states that the call needs no confirmation by the user. A call that
+// cannot be sent and an answer that is no verdict give CheckUnspecified, and
+// the host asks the user as without a check.
 func (h *Handler) Check(ctx context.Context, req pluginpkg.Request) pluginpkg.CheckResult {
 	log.Printf("mcp-plugin: Check begin call_id=%s action=%q", req.ID, req.Action)
 
@@ -260,8 +262,8 @@ func (h *Handler) Check(ctx context.Context, req pluginpkg.Request) pluginpkg.Ch
 		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckUnspecified}
 	}
 	if !result.Refused {
-		log.Printf("mcp-plugin: Check call_id=%s passed", req.ID)
-		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckPassed}
+		log.Printf("mcp-plugin: Check call_id=%s passed confirmation_not_required=%t", req.ID, result.ConfirmationNotRequired)
+		return pluginpkg.CheckResult{Verdict: pluginpkg.CheckPassed, ConfirmationNotRequired: result.ConfirmationNotRequired}
 	}
 	log.Printf("mcp-plugin: Check call_id=%s refused kind=%q", req.ID, result.Kind)
 	return pluginpkg.CheckResult{Verdict: pluginpkg.CheckRefused, Kind: result.Kind, Message: result.Message}

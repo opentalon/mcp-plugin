@@ -177,18 +177,52 @@ func TestHandler_Check_sendsWhatExecuteSends(t *testing.T) {
 
 func TestHandler_Check_verdict(t *testing.T) {
 	cases := []struct {
-		name     string
-		reply    checkReply
-		deadline time.Duration
-		want     pluginpkg.CheckVerdict
-		wantKind string
+		name            string
+		reply           checkReply
+		deadline        time.Duration
+		want            pluginpkg.CheckVerdict
+		wantKind        string
+		wantNotRequired bool
 	}{
 		{name: "passed", reply: checkReply{members: `"result":{"verdict":"passed"}`}, want: pluginpkg.CheckPassed},
+		{
+			name:  "passed, confirmation not required",
+			reply: checkReply{members: `"result":{"verdict":"passed","confirmation":"not_required"}`},
+			want:  pluginpkg.CheckPassed, wantNotRequired: true,
+		},
+		{
+			name:  "passed, confirmation required",
+			reply: checkReply{members: `"result":{"verdict":"passed","confirmation":"required"}`},
+			want:  pluginpkg.CheckPassed,
+		},
+		{
+			name:  "passed, confirmation in another case",
+			reply: checkReply{members: `"result":{"verdict":"passed","confirmation":"NOT_REQUIRED"}`},
+			want:  pluginpkg.CheckPassed,
+		},
+		{
+			name:  "passed, confirmation not a string",
+			reply: checkReply{members: `"result":{"verdict":"passed","confirmation":true}`},
+			want:  pluginpkg.CheckPassed,
+		},
 		{
 			name:  "refused",
 			reply: checkReply{members: fmt.Sprintf(`"result":{"verdict":"refused","kind":"invalid_argument","message":%q}`, refusal)},
 			want:  pluginpkg.CheckRefused, wantKind: "invalid_argument",
 		},
+		{
+			name: "refused, confirmation not required",
+			reply: checkReply{members: fmt.Sprintf(
+				`"result":{"verdict":"refused","kind":"invalid_argument","message":%q,"confirmation":"not_required"}`, refusal)},
+			want: pluginpkg.CheckRefused, wantKind: "invalid_argument",
+		},
+		{
+			name: "refused, confirmation not a string",
+			reply: checkReply{members: fmt.Sprintf(
+				`"result":{"verdict":"refused","kind":"invalid_argument","message":%q,"confirmation":{"x":1}}`, refusal)},
+			want: pluginpkg.CheckRefused, wantKind: "invalid_argument",
+		},
+		{name: "no verdict, confirmation not required", reply: checkReply{members: `"result":{"confirmation":"not_required"}`}},
 		{name: "refused without a message", reply: checkReply{members: `"result":{"verdict":"refused","kind":"invalid_argument","message":" "}`}},
 		{name: "method not found", reply: checkReply{members: `"error":{"code":-32601,"message":"Method not found"}`}},
 		{name: "tool without a check", reply: checkReply{members: `"error":{"code":-32602,"message":"Invalid params","data":"set_value has no check"}`}},
@@ -220,8 +254,9 @@ func TestHandler_Check_verdict(t *testing.T) {
 			if n := len(fs.requests("tools/call")); n != 0 {
 				t.Fatalf("a check sent %d tools/call", n)
 			}
-			if got.Verdict != tc.want || got.Kind != tc.wantKind {
-				t.Fatalf("Check = %+v, want verdict %v kind %q", got, tc.want, tc.wantKind)
+			if got.Verdict != tc.want || got.Kind != tc.wantKind || got.ConfirmationNotRequired != tc.wantNotRequired {
+				t.Fatalf("Check = %+v, want verdict %v kind %q confirmation not required %t",
+					got, tc.want, tc.wantKind, tc.wantNotRequired)
 			}
 			if tc.want != pluginpkg.CheckRefused {
 				if got.Message != "" {

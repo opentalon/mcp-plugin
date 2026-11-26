@@ -249,9 +249,19 @@ type Content struct {
 // opentalon/tools/check types; the request carries toolsCallParams.
 
 // checkAnswer is a server's verdict on a call sent for a check:
-// {"verdict":"passed"} or {"verdict":"refused","kind":…,"message":…}.
+// {"verdict":"passed"}, {"verdict":"passed","confirmation":"not_required"}
+// or {"verdict":"refused","kind":…,"message":…}.
 type checkAnswer struct {
 	Verdict string `json:"verdict"`
 	Kind    string `json:"kind,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Confirmation, with the verdict passed, is the string
+	// confirmationNotRequired when the call needs no confirmation by the
+	// user. Any JSON value decodes, so a value of another type is ignored
+	// instead of turning the verdict into an unreadable answer.
+	Confirmation any `json:"confirmation,omitempty"`
 }
+
+// confirmationNotRequired is the value of checkAnswer.Confirmation by which
+// a server states that a passed call needs no confirmation by the user.
+const confirmationNotRequired = "not_required"

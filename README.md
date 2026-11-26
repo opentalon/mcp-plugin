@@ -75,11 +75,15 @@ headers) and sends it with the parameters of `tools/call` as the method
 | The server answers | The host |
 |---|---|
 | `{"verdict": "passed"}` | asks the user, as without a check |
+| `{"verdict": "passed", "confirmation": "not_required"}` | executes the call without asking the user, if the host is configured to honour it (`orchestrator.pipeline.check_skips_confirmation`); otherwise asks, as for `passed` |
 | `{"verdict": "refused", "kind": "…", "message": "…"}` | answers the call with the message behind the lead-in of a failed tool call (`tool <name> error: `), without asking the user and without executing it |
 | an error (no such method, a tool without a check, an unknown tool), anything else, or nothing before the host's deadline | asks the user, as without a check |
 
-A check must not change anything on the server. Requires a host that sends
-checks.
+A check must not change anything on the server. Only the string
+`"not_required"` next to `"passed"` counts; any other value of
+`confirmation`, and the field next to `"refused"`, change nothing. The action
+stays a write action. Requires a host that sends checks; skipping the question
+requires a host that reads `confirmation_not_required`.
 
 For TCP mode (e.g. Docker), set `MCP_GRPC_PORT`:
 

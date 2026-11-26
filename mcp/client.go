@@ -314,6 +314,10 @@ type CheckResult struct {
 	// Message is the text an execution's refusal of the call reaches the
 	// host with, so the model reads the same refusal either way.
 	Message string
+	// ConfirmationNotRequired is true when the call passed and the server
+	// states that it needs no confirmation by the user
+	// ("confirmation":"not_required"). A refusal never carries it.
+	ConfirmationNotRequired bool
 }
 
 // CheckTool sends a tool call to the server's checkMethod, with the
@@ -325,7 +329,10 @@ type CheckResult struct {
 // server does not know it, the tool has no check or is unknown, the server
 // failed), a transport error, the end of ctx, a result that cannot be read, a
 // verdict this client does not know, and a refusal without a message, which
-// the host takes as no verdict and the lead-in would otherwise hide.
+// the host takes as no verdict and the lead-in would otherwise hide. A pass
+// carries ConfirmationNotRequired only for "confirmation":"not_required";
+// any other value of the field, and the field next to a refusal, change
+// nothing.
 func (c *Client) CheckTool(ctx context.Context, name string, args map[string]interface{}, extraHeaders http.Header) (CheckResult, error) {
 	id := c.nextID()
 	req := rpcRequest{
@@ -350,7 +357,7 @@ func (c *Client) CheckTool(ctx context.Context, name string, args map[string]int
 	}
 	switch {
 	case answer.Verdict == "passed":
-		return CheckResult{}, nil
+		return CheckResult{ConfirmationNotRequired: answer.Confirmation == confirmationNotRequired}, nil
 	case answer.Verdict != "refused":
 		return CheckResult{}, fmt.Errorf("%s %s: no verdict in %s", checkMethod, name, resp.Result)
 	case strings.TrimSpace(answer.Message) == "":
