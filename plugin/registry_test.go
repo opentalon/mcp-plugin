@@ -116,6 +116,12 @@ func TestBuild_populatesRegistry(t *testing.T) {
 // tool. Used to verify Build forwards instructions onto caps.SystemPromptAddition.
 func fakeMCPHTTPServerWithInstructions(t *testing.T, toolName, instructions string) *httptest.Server {
 	t.Helper()
+	return fakeMCPHTTPServerWithTools(t, instructions,
+		fmt.Sprintf(`[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]`, toolName))
+}
+
+func fakeMCPHTTPServerWithTools(t *testing.T, instructions, toolsJSON string) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -143,7 +149,7 @@ func fakeMCPHTTPServerWithInstructions(t *testing.T, toolName, instructions stri
 			b, _ := json.Marshal(payload)
 			result = b
 		case "tools/list":
-			result = json.RawMessage(fmt.Sprintf(`{"tools":[{"name":%q,"description":"test","inputSchema":{"type":"object","properties":{}}}]}`, toolName))
+			result = json.RawMessage(`{"tools":` + toolsJSON + `}`)
 		default:
 			result = json.RawMessage(`{}`)
 		}
@@ -176,6 +182,30 @@ func TestBuild_forwardsServerInstructionsToSystemPromptAddition(t *testing.T) {
 	for _, want := range []string{"## timly", timlyProse, "## other", otherProse} {
 		if !strings.Contains(got, want) {
 			t.Errorf("SystemPromptAddition missing %q\nfull text:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuild_passesDescriptionAsTheServerWroteIt(t *testing.T) {
+	srv := fakeMCPHTTPServerWithTools(t, "", `[
+		{"name":"list_items","description":"Lists items.\n\nDetail.","inputSchema":{"type":"object","properties":{}},
+		 "outputSchema":{"type":"object","properties":{"items":{"type":"array"}}}},
+		{"name":"show_item","description":"Shows one item.","inputSchema":{"type":"object","properties":{}}}
+	]`)
+
+	r := Build(testCtx(t), []config.ServerConfig{{Server: "srv", URL: srv.URL + "/mcp"}})
+
+	want := map[string]string{
+		"srv__list_items": "Lists items.\n\nDetail.",
+		"srv__show_item":  "Shows one item.",
+	}
+	got := make(map[string]string, len(r.caps.Actions))
+	for _, a := range r.caps.Actions {
+		got[a.Name] = a.Description
+	}
+	for name, w := range want {
+		if g, ok := got[name]; !ok || g != w {
+			t.Errorf("%s Description = %q (present %v), want %q", name, g, ok, w)
 		}
 	}
 }
